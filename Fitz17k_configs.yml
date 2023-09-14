@@ -1,14 +1,14 @@
 ---
 seed: 42
-output_folder_path: resnet18_model_checkpoint_last_evaluated_on_fitz.pt
+output_folder_path: /content/drive/MyDrive/FairPrune/Outputs/
 root_image_dir: /content/drive/MyDrive/Datasets/Fitz17k/Images/
 # root_image_dir: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/Images/
 Generated_csv_path: /content/drive/MyDrive/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
 # Generated_csv_path: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
 num_workers: 1
-metric: eod
 default:
   batch_size: 64
   n_epochs: 20
   pretrained: true
+  level: high
 FairPrune:
