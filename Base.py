@@ -34,12 +34,13 @@ def train_model(
     training_results = []
     validation_results = []
     start_epoch = 0
+    best_acc = 0
 
     best_model_path = os.path.join(
-        config["default"]["output_folder_path"], "Resnet18_checkpoint_BASE.pth"
+        config["output_folder_path"], "Resnet18_checkpoint_BASE.pth"
     )
 
-    if best_model_path.is_file():
+    if os.path.isfile(best_model_path):
         print("Resuming training from:", best_model_path)
         checkpoint = torch.load(best_model_path)
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -60,7 +61,6 @@ def train_model(
             # Set the model to the training mode
             if phase == "train":
                 model.train()
-                scheduler.step()
 
             # Set model to the evaluation mode
             else:
@@ -126,6 +126,9 @@ def train_model(
                 # Increment
                 cnt = cnt + 1
 
+            if phase == "train":
+                scheduler.step()
+
             # metrics
             epoch_loss = running_loss / dataset_sizes[phase]
             epoch_acc = running_corrects / dataset_sizes[phase]
@@ -141,11 +144,11 @@ def train_model(
             # Save the accuracy and loss
             if phase == "train":
                 training_results.append(
-                    [phase, epoch, epoch_loss, epoch_acc, epoch_balanced_acc]
+                    [phase, epoch, epoch_loss, epoch_acc.item(), epoch_balanced_acc]
                 )
             elif phase == "val":
                 validation_results.append(
-                    [phase, epoch, epoch_loss, epoch_acc, epoch_balanced_acc]
+                    [phase, epoch, epoch_loss, epoch_acc.item(), epoch_balanced_acc]
                 )
 
             # Deep copy the model
@@ -232,7 +235,7 @@ def eval_model(model, dataloaders, dataset_sizes, device, level, config):
             hasher = batch["hasher"]
 
             outputs = model(inputs.float())  # (batchsize, classes num)
-            probability = torch.nn.functional.softmax(outputs[0], dim=1)
+            probability = torch.nn.functional.softmax(outputs, dim=1)
             ppp, preds = torch.topk(probability, 1)  # topk values, topk indices
             if level == "low":
                 _, preds5 = torch.topk(probability, 3)  # topk values, topk indices
@@ -253,6 +256,13 @@ def eval_model(model, dataloaders, dataset_sizes, device, level, config):
         acc = float(running_corrects) / float(dataset_sizes["val"])
         balanced_acc = float(running_balanced_acc_sum) / float(dataset_sizes["val"])
 
+    def flatten(list_of_lists):
+        if len(list_of_lists) == 0:
+            return list_of_lists
+        if isinstance(list_of_lists[0], list):
+            return flatten(list_of_lists[0]) + flatten(list_of_lists[1:])
+        return list_of_lists[:1] + flatten(list_of_lists[1:])
+
     if level == "low":
         for j in topk_n:  # each sample
             for i in j:  # in k
@@ -265,13 +275,6 @@ def eval_model(model, dataloaders, dataset_sizes, device, level, config):
                 p1.append(i[0])
                 p2.append(i[1])
                 p3.append(i[2])
-
-        def flatten(list_of_lists):
-            if len(list_of_lists) == 0:
-                return list_of_lists
-            if isinstance(list_of_lists[0], list):
-                return flatten(list_of_lists[0]) + flatten(list_of_lists[1:])
-            return list_of_lists[:1] + flatten(list_of_lists[1:])
 
         df_x = pd.DataFrame(
             {
@@ -302,7 +305,7 @@ def eval_model(model, dataloaders, dataset_sizes, device, level, config):
     num_epoch = config["default"]["n_epochs"]
     df_x.to_csv(
         os.path.join(
-            config["default"]["output_folder_path"],
+            config["output_folder_path"],
             f"validation_results_Resnet18_{num_epoch}_random_holdout_BASE.csv",
         ),
         index=False,
@@ -325,9 +328,9 @@ def main(config):
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
         level=config["default"]["level"],
-        binary_subgroup=True,
+        binary_subgroup=config["default"]["binary_subgroup"],
+        fitz_filter=0,
         holdout_set="random_holdout",
-        seed=42,
         batch_size=config["default"]["batch_size"],
         num_workers=1,
     )
@@ -356,14 +359,14 @@ def main(config):
     num_epoch = config["default"]["n_epochs"]
     training_results.to_csv(
         os.path.join(
-            config["default"]["output_folder_path"],
+            config["output_folder_path"],
             f"training_results_Resnet18_{num_epoch}_random_holdout_BASE.csv",
         ),
         index=False,
     )
     validation_results.to_csv(
         os.path.join(
-            config["default"]["output_folder_path"],
+            config["output_folder_path"],
             f"all_validation_results_Resnet18_{num_epoch}_random_holdout_BASE.csv",
         ),
         index=False,

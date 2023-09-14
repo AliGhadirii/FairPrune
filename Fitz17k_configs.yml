@@ -1,14 +1,19 @@
 ---
 seed: 42
-output_folder_path: /content/drive/MyDrive/FairPrune/Outputs/
-root_image_dir: /content/drive/MyDrive/Datasets/Fitz17k/Images/
-# root_image_dir: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/Images/
-Generated_csv_path: /content/drive/MyDrive/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
-# Generated_csv_path: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
+#output_folder_path: /content/drive/MyDrive/FairPrune/Outputs/
+output_folder_path: /content/drive/MyDrive/UNSW/FairPrune/Outputs/
+# root_image_dir: /content/drive/MyDrive/Datasets/Fitz17k/Images/
+root_image_dir: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/Images/
+# Generated_csv_path: /content/drive/MyDrive/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
+Generated_csv_path: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
 num_workers: 1
 default:
   batch_size: 64
   n_epochs: 20
   pretrained: true
   level: high
+  binary_subgroup: True
 FairPrune:
+  batch_size: 2
+  avg_num_batch: 500
+  prune_ratio: 0.05

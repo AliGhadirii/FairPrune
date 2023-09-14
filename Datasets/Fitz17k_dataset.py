@@ -14,7 +14,6 @@ class Fitz17kDataset:
     def __init__(
         self,
         root_dir,
-        binary_subgroup=True,
         df=None,
         csv_file=None,
         transform=None,
@@ -33,7 +32,6 @@ class Fitz17kDataset:
             self.df = pd.read_csv(csv_file)
         self.root_dir = root_dir
         self.transform = transform
-        self.binary_subgroup = binary_subgroup
 
     def __len__(self):
         return len(self.df)
@@ -174,8 +172,8 @@ def get_fitz17k_dataloaders(
     Generated_csv_path,
     level="high",
     binary_subgroup=True,
+    fitz_filter=None,
     holdout_set="random_holdout",
-    seed=42,
     batch_size=64,
     num_workers=1,
 ):
@@ -185,6 +183,25 @@ def get_fitz17k_dataloaders(
         Generated_csv_path, holdout_set=holdout_set
     )
 
+    def map_fitzpatrick(value, binary_subgroup):
+        if binary_subgroup:
+            # Map values 1, 2, 3 to 0, and 4, 5, 6 to 1
+            return 0 if value in [1, 2, 3] else 1
+        else:
+            # No mapping needed
+            return value
+
+    train_df["fitzpatrick"] = train_df["fitzpatrick"].apply(
+        lambda x: map_fitzpatrick(x, binary_subgroup)
+    )
+    val_df["fitzpatrick"] = val_df["fitzpatrick"].apply(
+        lambda x: map_fitzpatrick(x, binary_subgroup)
+    )
+
+    if fitz_filter is not None:
+        train_df = train_df[train_df["fitzpatrick"] == fitz_filter]
+        val_df = val_df[val_df["fitzpatrick"] == fitz_filter]
+
     dataset_sizes = {"train": train_df.shape[0], "val": val_df.shape[0]}
     print(dataset_sizes)
 
@@ -193,7 +210,6 @@ def get_fitz17k_dataloaders(
     transformed_train = Fitz17kDataset(
         df=train_df,
         root_dir=root_image_dir,
-        binary_subgroup=binary_subgroup,
         transform=transforms.Compose(
             [
                 transforms.ToPILImage(),
@@ -210,7 +226,6 @@ def get_fitz17k_dataloaders(
     transformed_val = Fitz17kDataset(
         df=val_df,
         root_dir=root_image_dir,
-        binary_subgroup=binary_subgroup,
         transform=transforms.Compose(
             [
                 transforms.ToPILImage(),
