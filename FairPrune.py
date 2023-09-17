@@ -1,62 +1,181 @@
-import matplotlib.pyplot as plt
-import mlflow
+import argparse
+import yaml
+import time
+import os
+
+
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import torch
 import torch.nn as nn
-from backpack import backpack, extend
-from backpack.extensions import DiagHessian
+from torch.autograd import grad
 
-from open_fairprune.data_util import DATA_PATH, get_dataset, load_model, timeit
-from open_fairprune.eval_model import get_all_metrics
+# from backpack import backpack, extend
+# from backpack.extensions import DiagHessian
 
-metric = nn.CrossEntropyLoss()
+from Datasets.Fitz17k_dataset import get_fitz17k_dataloaders
+from Models.Fitz17k_models import Fitz17kResNet18
+from Utils.Misc_utils import set_seeds
+from Evaluation import eval_model
+
+
+# def get_parameter_salience(model_extend, metric_extend, batch, device):
+#     inputs = batch["image"].to(device)
+#     labels = batch["high"]
+#     labels = torch.from_numpy(np.asarray(labels)).to(device)
+
+#     output = model_extend(inputs.float())
+#     loss = metric_extend(output, labels)
+#     with backpack(DiagHessian()):
+#         loss.backward()
+
+#     return torch.cat([param.diag_h.flatten() for param in model_extend.parameters()])
+
+
+def get_parameter_salience(model, metric, batch, device):
+    inputs = batch["image"].to(device)
+    labels = batch["high"]
+    labels = torch.from_numpy(np.asarray(labels)).to(device)
+
+    # Initialize the Hessian matrix
+    hessian_matrix = torch.zeros(0).to(device)
+
+    # Forward pass to calculate loss
+    output = model(inputs.float())
+    loss = metric(output, labels)
+    averaged_loss = torch.mean(loss)
+
+    # Calculate the Hessian diagonal for each parameter
+    for param in model.parameters():
+        grads = torch.autograd.grad(averaged_loss, param, create_graph=True)
+        print("%%%%%%%%%%%%%%%")
+        print(grads[0].shape)
+        print("%%%%%%%%%%%%%%%")
+        hessian_diag = torch.cat(
+            [
+                torch.autograd.grad(grad, param, retain_graph=True)[0].view(-1)
+                for grad in grads
+            ]
+        )
+        hessian_matrix = torch.cat((hessian_matrix, hessian_diag))
+
+    return hessian_matrix
 
 
 def fairprune(
     model,
     metric,
-    train_dataset,
     device,
-    prune_ratio,
-    beta,
-    privileged_group,
-    unprivileged_group,
+    config,
     verbose=False,
 ):
     """
     ARGS:
         model: model to be pruned
         metric: loss function to be used for saliency
-        train_dataset: train_dataset
-        label: label to be predicted
         device: device to run on
-        prune_ratio: ratio of parameters to be pruned on each layer
-        beta: ratio between 0 and 1 for weighting of privileged group
-        privileged_group: privileged group idx in group tensor
-        unprivileged_group: unprivileged group idx in group tensor
+        config: config file
         verbose: boolean check to print pruning information
     RETURNS:
         model: pruned model
     """
-    model_extend = extend(model).to(device)
-    metric_extend = extend(metric).to(device)
+    # model_extend = extend(model).to(device)
+    # metric_extend = extend(metric).to(device)
 
-    (data, group, target) = [x.to(device) for x in train_dataset]
-    # Explicitely set unprivileged and privileged group to 0 and 1
-    g0 = group == unprivileged_group
-    g1 = group == privileged_group
+    dataloaders0, dataset_sizes0, num_classes0 = get_fitz17k_dataloaders(
+        root_image_dir=config["root_image_dir"],
+        Generated_csv_path=config["Generated_csv_path"],
+        level=config["default"]["level"],
+        binary_subgroup=config["default"]["binary_subgroup"],
+        fitz_filter=0,
+        holdout_set="random_holdout",
+        batch_size=config["FairPrune"]["batch_size"],
+        num_workers=1,
+    )
 
-    h0 = get_parameter_salience(model_extend, metric_extend, data[g0], target[g0])
-    h1 = get_parameter_salience(model_extend, metric_extend, data[g1], target[g1])
+    dataloaders1, dataset_sizes1, num_classes1 = get_fitz17k_dataloaders(
+        root_image_dir=config["root_image_dir"],
+        Generated_csv_path=config["Generated_csv_path"],
+        level=config["default"]["level"],
+        binary_subgroup=config["default"]["binary_subgroup"],
+        fitz_filter=1,
+        holdout_set="random_holdout",
+        batch_size=config["FairPrune"]["batch_size"],
+        num_workers=1,
+    )
 
-    θ = torch.cat([param.flatten() for param in model_extend.parameters()])
-    saliency = 1 / 2 * θ**2 * (h0 - beta * h1)  # saliency matrix
-    k = int(prune_ratio * len(θ))  # number of parameters to be pruned
+    # handling the compatibility of the given number of iterations with the dataloaders
+    max_num_batches = max(len(dataloaders0["train"]), len(dataloaders1["train"]))
+    if config["FairPrune"]["avg_num_batch"] > max_num_batches:
+        raise ValueError(
+            "The number of batches to calculate the average for should not exceed the maximum number of batches."
+        )
+
+    lengths_tensor = torch.tensor(
+        [len(dataloaders0["train"]), len(dataloaders1["train"])]
+    )
+    min_length_index, min_length = torch.argmin(lengths_tensor), torch.min(
+        lengths_tensor
+    )
+
+    all_saliencies = []
+    train_iterator0 = iter(dataloaders0["train"])
+    train_iterator1 = iter(dataloaders1["train"])
+
+    iter_cnt = 0
+    for batch0, batch1 in zip(train_iterator0, train_iterator1):
+        # h0 = get_parameter_salience(model_extend, metric_extend, batch0, device)
+        # h1 = get_parameter_salience(model_extend, metric_extend, batch1, device)
+
+        # θ = torch.cat([param.flatten() for param in model_extend.parameters()])
+
+        h0 = get_parameter_salience(model, metric, batch0, device)
+        h1 = get_parameter_salience(model, metric, batch1, device)
+
+        θ = torch.cat([param.flatten() for param in model.parameters()])
+
+        print(
+            "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+        )
+        print(f"theta shape: {θ.shape}")
+        print(f"h0 shape: {h0.shape}")
+        print(f"h1 shape: {h1.shape}")
+        print(
+            "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+        )
+
+        # saliency matrix
+        saliency = 1 / 2 * θ**2 * (h0 - config["FairPrune"]["beta"] * h1)
+
+        all_saliencies.append(saliency)
+
+        # handling the smaller dataloader
+        if iter_cnt % min_length == 0:
+            if min_length_index == 0:
+                train_iterator0 = iter(dataloaders0["train"])
+            else:
+                train_iterator1 = iter(dataloaders1["train"])
+
+        # Breaking when the number of batches to calculate the average for is reached
+        iter_cnt += 1
+        if iter_cnt >= config["FairPrune"]["avg_num_batch"]:
+            break
+
+    # Stack the tensors in the list along a new dimension (0)
+    all_saliencies = torch.stack(all_saliencies, dim=0)
+
+    # Calculate the mean along the first dimension (0)
+    average_saliency = torch.mean(all_saliencies, dim=0)
+
+    k = int(
+        config["FairPrune"]["prune_ratio"] * len(θ)
+    )  # number of parameters to be pruned
+
     topk_indices = torch.topk(
-        -saliency, k
+        -average_saliency, k
     ).indices  # note we want to prune the smallest values hence negative
+
+    # pruning the selected prameeters
     θ[topk_indices] = 0
 
     param_index = n_pruned = n_param = 0
@@ -76,206 +195,156 @@ def fairprune(
             std = round(torch.std(layer_saliency).item(), 5)
             min_value = torch.min(layer_saliency).item()
             max_value = torch.max(layer_saliency).item()
-            n_positive_predictions = model(data[g0]).softmax(dim=1).argmax(axis=1).sum()
-            print(f"{name = } {mean = } {std = } {num_params = }")
-            print(f"num of zeros: {torch.sum(param == 0).item()} / {num_params}")
-            print(f"{min_value = } {max_value = } {n_positive_predictions = }")
-            print(" ----------------------------------------")
+            # n_positive_predictions = model(data[g0]).softmax(dim=1).argmax(axis=1).sum()
+            print(
+                "************************************************************************************************"
+            )
+            print(f"model parameter name: {name}")
+            print(
+                f"Pruned pram / total_params: {torch.sum(param == 0).item()} / {num_params}"
+            )
+            print(f"Statistics of the pruned prams in this parameter:")
+            print(f"min: {min_value} / max: {max_value} / mean: {mean} / std: {std}")
+            print(
+                "************************************************************************************************"
+            )
 
     if verbose:
-        print(" --------- Pruning Verification ---------")
-        print("number of total zeros: ", n_pruned, " out of ", n_param, " parameters")
-        print(" ----------------------------------------")
+        print(
+            " --------------------------- Pruning Verification ---------------------------"
+        )
+        print(
+            f"\nPruned {n_pruned} out of {n_param} parameters\n",
+        )
+        print(
+            " ----------------------------------------------------------------------------"
+        )
 
     return model
 
 
-def get_parameter_salience(model_extend, metric_extend, data, target):
-    output = model_extend(data)
-    loss = metric_extend(output, target)
-    with backpack(DiagHessian()):
-        loss.backward()
+def main(config):
+    print("CUDA is available: {} \n".format(torch.cuda.is_available()))
+    print("Starting... \n")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    return torch.cat([param.diag_h.flatten() for param in model_extend.parameters()])
+    set_seeds(config["seed"])
 
-
-def hyperparameter_search_fairprune(RUN_ID, device, lossfunc):
-    """Hyperparameter search for fairprune to reproduce ablation study from paper"""
-    betas = [0.1, 0.3, 0.5, 0.7, 0.9]
-    prune_ratios = np.linspace(0, 0.1, 11)
-    prune_ratios2 = np.linspace(0, 1, 11)
-    prune_ratios = np.sort(np.concatenate((prune_ratios, prune_ratios2[1:])))
-
-    target_tradeoff = 0.35
-    prune_ratios = np.insert(
-        prune_ratios, np.searchsorted(prune_ratios, target_tradeoff), target_tradeoff
+    dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
+        root_image_dir=config["root_image_dir"],
+        Generated_csv_path=config["Generated_csv_path"],
+        level=config["default"]["level"],
+        binary_subgroup=config["default"]["binary_subgroup"],
+        holdout_set="random_holdout",
+        batch_size=config["default"]["batch_size"],
+        num_workers=1,
     )
-    data, group, y_true = get_dataset("test")
-    train = get_dataset("train")
-    data_accuracy = {"prune_ratio": prune_ratios}
-    data_eodd = {"prune_ratio": prune_ratios}
-    data_mcc_eopp1 = {"prune_ratio": target_tradeoff}
-    accuracy_metric = "matthews"
-    fairness_metric = "Eodd"
-    df_all = pd.DataFrame(columns=[])
 
-    def flatten(metrics):
-        return pd.DataFrame(metrics, index=metrics._fields)
+    model = Fitz17kResNet18(
+        num_classes=num_classes, pretrained=config["default"]["pretrained"]
+    )
+    model = model.to(device)
 
-    with mlflow.start_run(run_id=RUN_ID):
-        matthews_scores = []
-        eopp1 = []
-        for beta in betas:
-            accuracy_scores = []
-            fairness_scores = []
-            for prune_ratio in prune_ratios:
-                model = load_model(id=RUN_ID)
-                model.eval()
+    best_BASE_model_path = os.path.join(
+        config["output_folder_path"], "Resnet18_checkpoint_BASE.pth"
+    )
 
-                model_pruned = fairprune(
-                    model=model,
-                    metric=lossfunc,
-                    train_dataset=train,
-                    device=device,
-                    prune_ratio=prune_ratio,
-                    beta=beta,
-                    privileged_group=1,
-                    unprivileged_group=0,
-                )
-                model_pruned.eval()
-                with torch.no_grad():
-                    y_pred = model_pruned(data.to("cuda")).softmax(dim=1).detach().cpu()
+    if os.path.isfile(best_BASE_model_path):
+        print("Loading model from:", best_BASE_model_path)
+        checkpoint = torch.load(best_BASE_model_path)
+        model.load_state_dict(checkpoint["model_state_dict"])
 
-                fairness_metrics, general_metrics, fairprune_metrics = get_all_metrics(
-                    y_pred, y_true, group
-                )
+    metric = nn.CrossEntropyLoss(reduction="none")
 
-                result_dict = (
-                    pd.concat(
-                        [
-                            flatten(fairness_metrics),
-                            flatten(general_metrics).stack(),
-                            flatten(fairprune_metrics),
-                        ]
-                    )
-                    .squeeze()
-                    .apply(float)
-                    .to_dict()
-                )
-                result_dict["prune_ratio"] = prune_ratio
-                result_dict["beta"] = beta
-                if df_all is None:
-                    df_all = pd.DataFrame(columns=result_dict.keys())
-                df_all = pd.concat([df_all, pd.DataFrame(result_dict, index=[0])])
-                accuracy_scores.append(round(general_metrics.matthews.total.item(), 3))
-                fairness_scores.append(round(fairprune_metrics.EOdd.item(), 3))
-                if prune_ratio == target_tradeoff:
-                    matthews_scores.append(
-                        round(general_metrics.matthews.total.item(), 3)
-                    )
-                    eopp1.append(round(fairprune_metrics.EOpp1.item(), 3))
+    # Evaluating the BASE model
+    val_metrics, _ = eval_model(
+        model,
+        dataloaders,
+        dataset_sizes,
+        device,
+        config["default"]["level"],
+        "BASE",
+        config,
+        save_preds=False,
+    )
 
-            data_accuracy[f"β={beta}"] = accuracy_scores
-            data_eodd[f"β={beta}"] = fairness_scores
-        df_data_accuracy = pd.DataFrame(data_accuracy)
-        df_data_eodd = pd.DataFrame(data_eodd)
-        print(f"df_data_{accuracy_metric}: ", df_data_accuracy)
-        print(eopp1)
-        print(matthews_scores)
-        fig = plt.figure(figsize=(6, 6))
-        for key in data_accuracy.keys():
-            if "Beta" in key:
-                sns.lineplot(
-                    data=df_data_accuracy, x="prune_ratio", y=key, label=key, marker="o"
-                )
-        plt.ylabel(accuracy_metric)
-        plt.xlabel("Prune Ratio")
-        mlflow.log_figure(fig, f"fairprune_hyperparameter_search_{accuracy_metric}.png")
-        fig = plt.figure(figsize=(6, 6))
-        for key in data_eodd.keys():
-            if "Beta" in key:
-                sns.lineplot(
-                    data=df_data_eodd, x="prune_ratio", y=key, label=key, marker="o"
-                )
-        plt.ylabel(fairness_metric)
-        plt.xlabel("Prune Ratio")
+    best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
+    prun_iter_cnt = 0
+    no_improvement_cnt = 0
 
-        mlflow.log_figure(fig, f"fairprune_hyperparameter_search_{fairness_metric}.png")
+    while no_improvement_cnt < config["FairPrune"]["max_consecutive_no_improvement"]:
+        since = time.time()
 
-        fig = plt.figure(figsize=(6, 6))
-        data_mcc_eopp1[f"eopp1"] = eopp1
-        data_mcc_eopp1[f"matthews"] = matthews_scores
-        df_f1_eopp1 = pd.DataFrame(data_mcc_eopp1)
-        sns.lineplot(
-            data=df_f1_eopp1,
-            x="eopp1",
-            y="matthews",
-            label=f"Prune Ratio {target_tradeoff}",
-            marker="o",
+        print(
+            f"+++++++++++++++++++++++++++++ Pruning Iteration {prun_iter_cnt} +++++++++++++++++++++++++++++"
         )
-        plt.ylabel("Matthews")
-        plt.xlabel("EOpp1")
-        plt.title(f"Matthews vs EOpp1 at {target_tradeoff} Prune Ratio")
-        mlflow.log_figure(fig, f"fairprune_hyperparameter_search_matthews_eopp1.png")
-        df_all.to_json("fairprune_hyperparameter_search.json", orient="records")
-
-
-if __name__ == "__main__":
-    prune_ratio = 0.3
-    beta = 0.5
-    hyperparameter_search = False
-    RUN_ID = "7b9c67bcf82b40328baf2294df5bd1a6"
-    device = torch.device("cuda")
-    lossfunc = nn.CrossEntropyLoss()
-
-    model, RUN_ID = load_model(id=RUN_ID, return_run_id=True)
-    print("RUN_ID: ", RUN_ID)
-    client = mlflow.MlflowClient()
-    setup = client.get_run(RUN_ID).to_dictionary()["data"]["params"]
-
-    train = get_dataset("train")
-
-    if hyperparameter_search:
-        with timeit("hyperparameter_search"):
-            hyperparameter_search_fairprune(
-                RUN_ID=RUN_ID, device=device, lossfunc=lossfunc
-            )
-        exit()
-
-    with timeit("fairprune"):
         model_pruned = fairprune(
             model=model,
-            metric=lossfunc,
-            train_dataset=train,
+            metric=metric,
             device=device,
-            prune_ratio=prune_ratio,
-            beta=beta,
-            privileged_group=1,
-            unprivileged_group=0,
+            config=config,
             verbose=True,
         )
 
-    with mlflow.start_run(RUN_ID):
-        mlflow.set_tracking_uri(uri=f"file://{DATA_PATH}\mlruns")
+        val_metrics, df_preds = eval_model(
+            model_pruned,
+            dataloaders,
+            dataset_sizes,
+            device,
+            config["default"]["level"],
+            "FairPrune",
+            config,
+            save_preds=False,
+        )
 
-        mlflow.pytorch.log_model(model_pruned, f"fairpruned_model_{prune_ratio}_{beta}")
+        if val_metrics[config["FairPrune"]["target_bias_metric"]] > best_bias_metric:
+            best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
 
-        data, group, y_true = get_dataset("dev")
-        model, RUN_ID = load_model(
-            id=RUN_ID, return_run_id=True
-        )  # reload to avoid overwriting
+            # Save the df_preds
 
-        for model, suffix in [(model, "pre_"), (model_pruned, "post_")]:
-            with torch.no_grad():
-                model.eval()
-                y_pred = model(data.to("cuda")).softmax(dim=1).detach().cpu()
-
-            fairness_metrics, general_metrics, fairprune_metrics = get_all_metrics(
-                y_pred, y_true, group, log_mlflow_w_suffix=suffix
+            df_preds.to_csv(
+                os.path.join(
+                    config["output_folder_path"],
+                    f"validation_results_Resnet18_FairPrune_Iter={prun_iter_cnt}.csv",
+                ),
+                index=False,
             )
-            print(
-                f" Fairprune metrics for {suffix} pruning: ",
-                fairness_metrics,
-                general_metrics,
-                sep="\n",
+
+            # Save the best model
+            print("New leading model val metrics \n")
+            print(val_metrics)
+
+            best_model_path = os.path.join(
+                config["output_folder_path"],
+                f"Resnet18_checkpoint_FairPrune_Iter={prun_iter_cnt}.pth",
             )
+            checkpoint = {
+                "leading_val_metrics": val_metrics,
+                "model_state_dict": model.state_dict(),
+            }
+            torch.save(checkpoint, best_model_path)
+            print("Checkpoint saved:", best_model_path)
+
+            # Reset the counter
+            consecutive_no_improvement = 0
+        else:
+            print("No improvement in the bias metric\n")
+            consecutive_no_improvement += 1
+
+        prun_iter_cnt += 1
+
+        time_elapsed = time.time() - since
+        print(
+            "This iteration took {:.0f}m {:.0f}s".format(
+                time_elapsed // 60, time_elapsed % 60
+            )
+        )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", help="Path to configuration yaml file.")
+    args = parser.parse_args()
+    with open(args.config, "r") as fh:
+        config = yaml.load(fh, Loader=yaml.FullLoader)
+    main(config)

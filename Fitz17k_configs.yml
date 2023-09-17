@@ -16,4 +16,10 @@ default:
 FairPrune:
   batch_size: 2
   avg_num_batch: 500
-  prune_ratio: 0.05
+  prune_ratio: 0.05           # ratio of parameters to be pruned on each layer
+  beta: 0.5                   # ratio between 0 and 1 for weighting of privileged group
+  privileged_group: 1         # privileged group sensative attribute value in dataset
+  unprivileged_group: 0       # unprivileged group sensative attribute value in dataset
+  target_bias_metric: EOM     #it can be "PQD", "DPM", or "EOM"
+  max_consecutive_no_improvement: 5
+
