@@ -1,11 +1,11 @@
 ---
 seed: 42
-output_folder_path: /content/drive/MyDrive/FairPrune/Outputs/
-#output_folder_path: /content/drive/MyDrive/UNSW/FairPrune/Outputs/
-root_image_dir: /content/drive/MyDrive/Datasets/Fitz17k/Images/
-#root_image_dir: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/Images/
-Generated_csv_path: /content/drive/MyDrive/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
-#Generated_csv_path: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
+#output_folder_path: /content/drive/MyDrive/FairPrune/Outputs/
+output_folder_path: /content/drive/MyDrive/UNSW/FairPrune/Outputs/
+#root_image_dir: /content/drive/MyDrive/Datasets/Fitz17k/Images/
+root_image_dir: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/Images/
+#Generated_csv_path: /content/drive/MyDrive/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
+Generated_csv_path: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/BiasGDA&Pruning/fitapatrick17k_known_code.csv
 num_workers: 1
 default:
   batch_size: 64
@@ -15,7 +15,7 @@ default:
   binary_subgroup: True
 FairPrune:
   batch_size: 2
-  avg_num_batch: 70
+  avg_num_batch: 100
   prune_ratio: 0.05           # ratio of parameters to be pruned on each layer
   beta: 0.5                   # ratio between 0 and 1 for weighting of privileged group
   privileged_group: 1         # privileged group sensative attribute value in dataset
