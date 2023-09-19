@@ -15,7 +15,7 @@ from sklearn.metrics import balanced_accuracy_score
 from Datasets.Fitz17k_dataset import get_fitz17k_dataloaders
 from Models.Fitz17k_models import Fitz17kResNet18
 from Utils.Misc_utils import set_seeds
-from Utils.Metrics import eval_model
+from Evaluation import eval_model
 
 
 def train_model(
@@ -220,7 +220,6 @@ def main(config):
         Generated_csv_path=config["Generated_csv_path"],
         level=config["default"]["level"],
         binary_subgroup=config["default"]["binary_subgroup"],
-        fitz_filter=0,
         holdout_set="random_holdout",
         batch_size=config["default"]["batch_size"],
         num_workers=1,
@@ -230,6 +229,8 @@ def main(config):
         num_classes=num_classes, pretrained=config["default"]["pretrained"]
     )
     model = model.to(device)
+    
+    print(model)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), 0.0001)

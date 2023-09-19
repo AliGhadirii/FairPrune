@@ -3,15 +3,14 @@ import yaml
 import time
 import os
 
-
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.autograd import grad
+from torchvision.models import resnet18
 
-# from backpack import backpack, extend
-# from backpack.extensions import DiagHessian
+from backpack import backpack, extend
+from backpack.extensions import DiagHessian, DiagGGNExact
 
 from Datasets.Fitz17k_dataset import get_fitz17k_dataloaders
 from Models.Fitz17k_models import Fitz17kResNet18
@@ -19,47 +18,20 @@ from Utils.Misc_utils import set_seeds
 from Evaluation import eval_model
 
 
-# def get_parameter_salience(model_extend, metric_extend, batch, device):
-#     inputs = batch["image"].to(device)
-#     labels = batch["high"]
-#     labels = torch.from_numpy(np.asarray(labels)).to(device)
-
-#     output = model_extend(inputs.float())
-#     loss = metric_extend(output, labels)
-#     with backpack(DiagHessian()):
-#         loss.backward()
-
-#     return torch.cat([param.diag_h.flatten() for param in model_extend.parameters()])
-
-
-def get_parameter_salience(model, metric, batch, device):
+def get_parameter_salience(model_extend, metric_extend, batch, device):
     inputs = batch["image"].to(device)
     labels = batch["high"]
     labels = torch.from_numpy(np.asarray(labels)).to(device)
 
-    # Initialize the Hessian matrix
-    hessian_matrix = torch.zeros(0).to(device)
+    output = model_extend(inputs.float())
+    loss = metric_extend(output, labels)
 
-    # Forward pass to calculate loss
-    output = model(inputs.float())
-    loss = metric(output, labels)
-    averaged_loss = torch.mean(loss)
+    with backpack(DiagGGNExact()):
+        loss.backward()
 
-    # Calculate the Hessian diagonal for each parameter
-    for param in model.parameters():
-        grads = torch.autograd.grad(averaged_loss, param, create_graph=True)
-        print("%%%%%%%%%%%%%%%")
-        print(grads[0].shape)
-        print("%%%%%%%%%%%%%%%")
-        hessian_diag = torch.cat(
-            [
-                torch.autograd.grad(grad, param, retain_graph=True)[0].view(-1)
-                for grad in grads
-            ]
-        )
-        hessian_matrix = torch.cat((hessian_matrix, hessian_diag))
-
-    return hessian_matrix
+    return torch.cat(
+        [param.diag_ggn_exact.flatten() for param in model_extend.parameters()]
+    )
 
 
 def fairprune(
@@ -79,8 +51,9 @@ def fairprune(
     RETURNS:
         model: pruned model
     """
-    # model_extend = extend(model).to(device)
-    # metric_extend = extend(metric).to(device)
+
+    model_extend = extend(model, use_converter=True)
+    metric_extend = extend(metric.to(device))
 
     dataloaders0, dataset_sizes0, num_classes0 = get_fitz17k_dataloaders(
         root_image_dir=config["root_image_dir"],
@@ -124,26 +97,11 @@ def fairprune(
 
     iter_cnt = 0
     for batch0, batch1 in zip(train_iterator0, train_iterator1):
-        # h0 = get_parameter_salience(model_extend, metric_extend, batch0, device)
-        # h1 = get_parameter_salience(model_extend, metric_extend, batch1, device)
+        h0 = get_parameter_salience(model_extend, metric_extend, batch0, device)
+        h1 = get_parameter_salience(model_extend, metric_extend, batch1, device)
 
-        # θ = torch.cat([param.flatten() for param in model_extend.parameters()])
-
-        h0 = get_parameter_salience(model, metric, batch0, device)
-        h1 = get_parameter_salience(model, metric, batch1, device)
-
-        θ = torch.cat([param.flatten() for param in model.parameters()])
-
-        print(
-            "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
-        )
-        print(f"theta shape: {θ.shape}")
-        print(f"h0 shape: {h0.shape}")
-        print(f"h1 shape: {h1.shape}")
-        print(
-            "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
-        )
-
+        θ = torch.cat([param.flatten() for param in model_extend.parameters()])
+        print(f"processing batch {iter_cnt}")
         # saliency matrix
         saliency = 1 / 2 * θ**2 * (h0 - config["FairPrune"]["beta"] * h1)
 
@@ -220,6 +178,13 @@ def fairprune(
             " ----------------------------------------------------------------------------"
         )
 
+    # get rid of the dataloaders to free up RAM
+    dataloaders0 = None
+    dataloaders1 = None
+
+    # clear GPU cache to free up RAM
+    torch.cuda.empty_cache()
+
     return model
 
 
@@ -230,20 +195,23 @@ def main(config):
 
     set_seeds(config["seed"])
 
-    dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
-        root_image_dir=config["root_image_dir"],
-        Generated_csv_path=config["Generated_csv_path"],
-        level=config["default"]["level"],
-        binary_subgroup=config["default"]["binary_subgroup"],
-        holdout_set="random_holdout",
-        batch_size=config["default"]["batch_size"],
-        num_workers=1,
-    )
+    # dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
+    #     root_image_dir=config["root_image_dir"],
+    #     Generated_csv_path=config["Generated_csv_path"],
+    #     level=config["default"]["level"],
+    #     binary_subgroup=config["default"]["binary_subgroup"],
+    #     holdout_set="random_holdout",
+    #     batch_size=config["default"]["batch_size"],
+    #     num_workers=1,
+    # )
 
-    model = Fitz17kResNet18(
-        num_classes=num_classes, pretrained=config["default"]["pretrained"]
+    # model = Fitz17kResNet18(num_classes=num_classes, pretrained=config["default"]["pretrained"]).to(device).eval()
+
+    model = (
+        Fitz17kResNet18(num_classes=3, pretrained=config["default"]["pretrained"])
+        .to(device)
+        .eval()
     )
-    model = model.to(device)
 
     best_BASE_model_path = os.path.join(
         config["output_folder_path"], "Resnet18_checkpoint_BASE.pth"
@@ -254,23 +222,26 @@ def main(config):
         checkpoint = torch.load(best_BASE_model_path)
         model.load_state_dict(checkpoint["model_state_dict"])
 
-    metric = nn.CrossEntropyLoss(reduction="none")
+    metric = nn.CrossEntropyLoss()
 
-    # Evaluating the BASE model
-    val_metrics, _ = eval_model(
-        model,
-        dataloaders,
-        dataset_sizes,
-        device,
-        config["default"]["level"],
-        "BASE",
-        config,
-        save_preds=False,
-    )
+    # # Evaluating the BASE model
+    # val_metrics, _ = eval_model(
+    #     model,
+    #     dataloaders,
+    #     dataset_sizes,
+    #     device,
+    #     config["default"]["level"],
+    #     "BASE",
+    #     config,
+    #     save_preds=False,
+    # )
+    # print("model's bias metrics before pruning: {}".format(val_metrics[config['FairPrune']['target_bias_metric']]))
 
-    best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
+    # best_bias_metric = val_metrics[config['FairPrune']["target_bias_metric"]]
+    best_bias_metric = 0.6394507842223532
     prun_iter_cnt = 0
     no_improvement_cnt = 0
+    consecutive_no_improvement = 0
 
     while no_improvement_cnt < config["FairPrune"]["max_consecutive_no_improvement"]:
         since = time.time()
@@ -286,6 +257,16 @@ def main(config):
             verbose=True,
         )
 
+        dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
+            root_image_dir=config["root_image_dir"],
+            Generated_csv_path=config["Generated_csv_path"],
+            level=config["default"]["level"],
+            binary_subgroup=config["default"]["binary_subgroup"],
+            holdout_set="random_holdout",
+            batch_size=config["default"]["batch_size"],
+            num_workers=1,
+        )
+
         val_metrics, df_preds = eval_model(
             model_pruned,
             dataloaders,
@@ -296,6 +277,8 @@ def main(config):
             config,
             save_preds=False,
         )
+
+        torch.cuda.empty_cache()
 
         if val_metrics[config["FairPrune"]["target_bias_metric"]] > best_bias_metric:
             best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
