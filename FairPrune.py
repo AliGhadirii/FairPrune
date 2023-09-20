@@ -3,7 +3,6 @@ import yaml
 import time
 import os
 from tqdm import tqdm
-import gc
 
 import numpy as np
 import pandas as pd
@@ -34,8 +33,8 @@ def get_parameter_salience(model_extend, metric_extend, batch, device):
         [param.diag_ggn_exact.flatten() for param in model_extend.parameters()]
     )
 
+
 def describe_tensor(tensor):
-  
     if not isinstance(tensor, torch.Tensor):
         raise ValueError("Input must be a PyTorch tensor")
 
@@ -47,6 +46,7 @@ def describe_tensor(tensor):
     }
 
     return stats
+
 
 def fairprune(
     model,
@@ -141,13 +141,10 @@ def fairprune(
     # Stack the tensors in the list along a new dimension (0)
     all_saliencies = torch.stack(all_saliencies, dim=0)
 
-    print("all_saliencies[0].shape: ", all_saliencies[0].shape)
-
     # Calculate the mean along the first dimension (0)
     average_saliency = torch.mean(all_saliencies, dim=0)
 
-    print("average_saliency[0].shape: ", average_saliency.shape)
-    
+    print("average_saliency stats ")
     print(describe_tensor(average_saliency))
 
     k = int(
@@ -158,8 +155,11 @@ def fairprune(
         -average_saliency, k
     ).indices  # note we want to prune the smallest values hence negative
 
-    # pruning the selected prameeters
-    θ[topk_indices] = 0
+    # # pruning the selected prameeters
+    # θ[topk_indices] = 0
+
+    mask = torch.ones(θ.shape).to(device)
+    mask[topk_indices] = 0
 
     param_index = n_pruned = n_param = 0
     for name, param in model.named_parameters():
@@ -167,33 +167,33 @@ def fairprune(
         if "bias" in name:
             continue
         num_params = param.numel()
-        layer_saliency = θ[param_index : param_index + num_params].view(param.size())
-        param.data = layer_saliency
+        param.data = param.data * mask[param_index : param_index + num_params].view(
+            param.size()
+        )
         param_index += num_params
+        n_pruned += torch.sum(param.data == 0).item()
+        n_param += num_params
 
-        if verbose > 0:
-            n_pruned += torch.sum(param.data == 0).item()
-            n_param += num_params
-            if verbose == 2:
-                mean = round(torch.mean(layer_saliency).item(), 5)
-                std = round(torch.std(layer_saliency).item(), 5)
-                min_value = torch.min(layer_saliency).item()
-                max_value = torch.max(layer_saliency).item()
-                # n_positive_predictions = model(data[g0]).softmax(dim=1).argmax(axis=1).sum()
-                print(
-                    "************************************************************************************************"
-                )
-                print(f"model parameter name: {name}")
-                print(
-                    f"Pruned pram / total_params: {torch.sum(param == 0).item()} / {num_params}"
-                )
-                print(f"Statistics of the pruned prams in this parameter:")
-                print(
-                    f"min: {min_value} / max: {max_value} / mean: {mean} / std: {std}"
-                )
-                print(
-                    "************************************************************************************************"
-                )
+        # if verbose == 2:
+        #     mean = round(torch.mean(layer_saliency).item(), 5)
+        #     std = round(torch.std(layer_saliency).item(), 5)
+        #     min_value = torch.min(layer_saliency).item()
+        #     max_value = torch.max(layer_saliency).item()
+        #     # n_positive_predictions = model(data[g0]).softmax(dim=1).argmax(axis=1).sum()
+        #     print(
+        #         "************************************************************************************************"
+        #     )
+        #     print(f"model parameter name: {name}")
+        #     print(
+        #         f"Pruned pram / total_params: {torch.sum(param == 0).item()} / {num_params}"
+        #     )
+        #     print(f"Statistics of the pruned prams in this parameter:")
+        #     print(
+        #         f"min: {min_value} / max: {max_value} / mean: {mean} / std: {std}"
+        #     )
+        #     print(
+        #         "************************************************************************************************"
+        #     )
 
     if verbose > 0:
         print(
@@ -305,14 +305,6 @@ def main(config):
             config,
             save_preds=False,
         )
-        df_preds.to_csv(
-            os.path.join(
-                config["output_folder_path"],
-                f"validation_results_Resnet18_FairPrune_Iter={prun_iter_cnt}_temp.csv",
-            ),
-            index=False,
-        )
-        torch.cuda.empty_cache()
 
         if val_metrics[config["FairPrune"]["target_bias_metric"]] > best_bias_metric:
             best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
@@ -349,6 +341,13 @@ def main(config):
                 "Bias Metric is: {}, No improvement.\n".format(
                     val_metrics[config["FairPrune"]["target_bias_metric"]]
                 )
+            )
+            df_preds.to_csv(
+                os.path.join(
+                    config["output_folder_path"],
+                    f"validation_results_Resnet18_FairPrune_Iter={prun_iter_cnt}_temp.csv",
+                ),
+                index=False,
             )
             consecutive_no_improvement += 1
 
