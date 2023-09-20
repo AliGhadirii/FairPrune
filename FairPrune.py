@@ -105,11 +105,12 @@ def fairprune(
         lengths_tensor
     )
 
-    all_saliencies = []
+    
     train_iterator0 = iter(dataloaders0["train"])
     train_iterator1 = iter(dataloaders1["train"])
 
     θ = torch.cat([param.flatten() for param in model_extend.parameters()])
+    sum_saliencies = torch.zeros_like(θ)
 
     for iter_cnt, (batch0, batch1) in tqdm(
         enumerate(zip(train_iterator0, train_iterator1)),
@@ -121,7 +122,7 @@ def fairprune(
         # saliency matrix
         saliency = 1 / 2 * θ**2 * (h0 - config["FairPrune"]["beta"] * h1)
 
-        all_saliencies.append(saliency)
+        sum_saliencies = sum_saliencies + saliency
 
         del h0, h1, saliency
         torch.cuda.empty_cache()
@@ -138,11 +139,8 @@ def fairprune(
         if iter_cnt >= config["FairPrune"]["avg_num_batch"]:
             break
 
-    # Stack the tensors in the list along a new dimension (0)
-    all_saliencies = torch.stack(all_saliencies, dim=0)
-
     # Calculate the mean along the first dimension (0)
-    average_saliency = torch.mean(all_saliencies, dim=0)
+    average_saliency = sum_saliencies / config["FairPrune"]["avg_num_batch"]
 
     print("average_saliency stats ")
     print(describe_tensor(average_saliency))

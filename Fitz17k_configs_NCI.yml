@@ -7,7 +7,7 @@ num_workers: 1
 default:
   batch_size: 64
   n_epochs: 20
-  pretrained: true
+  pretrained: False
   level: high
   binary_subgroup: True
 FairPrune:

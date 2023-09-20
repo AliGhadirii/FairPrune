@@ -19,4 +19,4 @@ conda activate FairPrune
 export PYTHONPATH="/home/561/ag4694/Repos/FairPrune/:$PYTHONPATH"
 
 # Call the script to run
-!python FairPrune.py --config Fitz17k_configs_NCI.yml
+python FairPrune.py --config Fitz17k_configs_NCI.yml
