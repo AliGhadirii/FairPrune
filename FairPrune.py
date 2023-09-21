@@ -105,7 +105,6 @@ def fairprune(
         lengths_tensor
     )
 
-    
     train_iterator0 = iter(dataloaders0["train"])
     train_iterator1 = iter(dataloaders1["train"])
 
@@ -161,15 +160,16 @@ def fairprune(
 
     param_index = n_pruned = n_param = 0
     for name, param in model.named_parameters():
-        # Note: bias is not pruned so explicitly avoiding
-        if "bias" in name:
-            continue
         num_params = param.numel()
-        param.data = param.data * mask[param_index : param_index + num_params].view(
-            param.size()
-        )
+
+        # Note: bias is not pruned so explicitly avoiding it
+        if not "bias" in name:
+            param.data = param.data * mask[param_index : param_index + num_params].view(
+                param.size()
+            )
+            n_pruned += torch.sum(param.data == 0).item()
+
         param_index += num_params
-        n_pruned += torch.sum(param.data == 0).item()
         n_param += num_params
 
         # if verbose == 2:
@@ -357,6 +357,15 @@ def main(config):
                 time_elapsed // 60, time_elapsed % 60
             )
         )
+
+        if (
+            consecutive_no_improvement
+            == config["FairPrune"]["max_consecutive_no_improvement"]
+        ):
+            print(
+                "max_consecutive_no_improvement limit reached, Stopping the Pruning..."
+            )
+            break
 
 
 if __name__ == "__main__":
