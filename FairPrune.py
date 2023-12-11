@@ -10,11 +10,12 @@ import torch
 import torch.nn as nn
 
 from backpack import backpack, extend
-from backpack.extensions import DiagHessian, DiagGGNExact
+from backpack.extensions import DiagGGNExact
 
-from Datasets.Fitz17k_dataset import get_fitz17k_dataloaders
+from Datasets.dataloaders import get_fitz17k_dataloaders
 from Models.Fitz17k_models import Fitz17kResNet18
 from Utils.Misc_utils import set_seeds
+from Utils.Metrics import plot_metrics
 from Evaluation import eval_model
 
 
@@ -30,22 +31,8 @@ def get_parameter_salience(model_extend, metric_extend, batch, device):
         loss.backward()
 
     return torch.cat(
-        [param.diag_ggn_exact.flatten() for param in model_extend.parameters()]
+        [param.diag_ggn_exact.flatten().detach() for param in model_extend.parameters()]
     )
-
-
-def describe_tensor(tensor):
-    if not isinstance(tensor, torch.Tensor):
-        raise ValueError("Input must be a PyTorch tensor")
-
-    stats = {
-        "Mean": tensor.mean().item(),
-        "Std Deviation": tensor.std().item(),
-        "Minimum Value": tensor.min().item(),
-        "Maximum Value": tensor.max().item(),
-    }
-
-    return stats
 
 
 def fairprune(
@@ -69,31 +56,30 @@ def fairprune(
     model_extend = extend(model, use_converter=True)
     metric_extend = extend(metric.to(device))
 
+    
     dataloaders0, dataset_sizes0, num_classes0 = get_fitz17k_dataloaders(
-        root_image_dir=config["root_image_dir"],
-        Generated_csv_path=config["Generated_csv_path"],
-        level=config["default"]["level"],
-        binary_subgroup=config["default"]["binary_subgroup"],
-        fitz_filter=0,
-        holdout_set="random_holdout",
-        batch_size=config["FairPrune"]["batch_size"],
-        num_workers=1,
+    root_image_dir=config["root_image_dir"],
+    Generated_csv_path=config["Generated_csv_path"],
+    level=config["default"]["level"],
+    fitz_filter=0,
+    holdout_set="random_holdout",
+    batch_size=config["FairPrune"]["batch_size"],
+    num_workers=1,
     )
 
     dataloaders1, dataset_sizes1, num_classes1 = get_fitz17k_dataloaders(
-        root_image_dir=config["root_image_dir"],
-        Generated_csv_path=config["Generated_csv_path"],
-        level=config["default"]["level"],
-        binary_subgroup=config["default"]["binary_subgroup"],
-        fitz_filter=1,
-        holdout_set="random_holdout",
-        batch_size=config["FairPrune"]["batch_size"],
-        num_workers=1,
+    root_image_dir=config["root_image_dir"],
+    Generated_csv_path=config["Generated_csv_path"],
+    level=config["default"]["level"],
+    fitz_filter=1,
+    holdout_set="random_holdout",
+    batch_size=config["FairPrune"]["batch_size"],
+    num_workers=1,
     )
 
     # handling the compatibility of the given number of iterations with the dataloaders
     max_num_batches = max(len(dataloaders0["train"]), len(dataloaders1["train"]))
-    if config["FairPrune"]["avg_num_batch"] > max_num_batches:
+    if config["FairPrune"]["num_batch_per_iter"] > max_num_batches:
         raise ValueError(
             "The number of batches to calculate the average for should not exceed the maximum number of batches."
         )
@@ -113,7 +99,7 @@ def fairprune(
 
     for iter_cnt, (batch0, batch1) in tqdm(
         enumerate(zip(train_iterator0, train_iterator1)),
-        total=config["FairPrune"]["avg_num_batch"],
+        total=config["FairPrune"]["num_batch_per_iter"],
     ):
         h0 = get_parameter_salience(model_extend, metric_extend, batch0, device)
         h1 = get_parameter_salience(model_extend, metric_extend, batch1, device)
@@ -135,14 +121,11 @@ def fairprune(
 
         # Breaking when the number of batches to calculate the average for is reached
         iter_cnt += 1
-        if iter_cnt >= config["FairPrune"]["avg_num_batch"]:
+        if iter_cnt >= config["FairPrune"]["num_batch_per_iter"]:
             break
 
     # Calculate the mean along the first dimension (0)
-    average_saliency = sum_saliencies / config["FairPrune"]["avg_num_batch"]
-
-    print("average_saliency stats ")
-    print(describe_tensor(average_saliency))
+    average_saliency = sum_saliencies / config["FairPrune"]["num_batch_per_iter"]
 
     k = int(
         config["FairPrune"]["prune_ratio"] * len(θ)
@@ -151,9 +134,6 @@ def fairprune(
     topk_indices = torch.topk(
         -average_saliency, k
     ).indices  # note we want to prune the smallest values hence negative
-
-    # # pruning the selected prameeters
-    # θ[topk_indices] = 0
 
     mask = torch.ones(θ.shape).to(device)
     mask[topk_indices] = 0
@@ -171,27 +151,6 @@ def fairprune(
 
         param_index += num_params
         n_param += num_params
-
-        # if verbose == 2:
-        #     mean = round(torch.mean(layer_saliency).item(), 5)
-        #     std = round(torch.std(layer_saliency).item(), 5)
-        #     min_value = torch.min(layer_saliency).item()
-        #     max_value = torch.max(layer_saliency).item()
-        #     # n_positive_predictions = model(data[g0]).softmax(dim=1).argmax(axis=1).sum()
-        #     print(
-        #         "************************************************************************************************"
-        #     )
-        #     print(f"model parameter name: {name}")
-        #     print(
-        #         f"Pruned pram / total_params: {torch.sum(param == 0).item()} / {num_params}"
-        #     )
-        #     print(f"Statistics of the pruned prams in this parameter:")
-        #     print(
-        #         f"min: {min_value} / max: {max_value} / mean: {mean} / std: {std}"
-        #     )
-        #     print(
-        #         "************************************************************************************************"
-        #     )
 
     if verbose > 0:
         print(
@@ -221,18 +180,15 @@ def main(config):
 
     set_seeds(config["seed"])
 
-    # dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
-    #     root_image_dir=config["root_image_dir"],
-    #     Generated_csv_path=config["Generated_csv_path"],
-    #     level=config["default"]["level"],
-    #     binary_subgroup=config["default"]["binary_subgroup"],
-    #     holdout_set="random_holdout",
-    #     batch_size=config["default"]["batch_size"],
-    #     num_workers=1,
-    # )
-
-    # model = Fitz17kResNet18(num_classes=num_classes, pretrained=config["default"]["pretrained"]).to(device).eval()
-
+    dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
+            root_image_dir=config["root_image_dir"],
+            Generated_csv_path=config["Generated_csv_path"],
+            level=config["default"]["level"],
+            holdout_set="random_holdout",
+            batch_size=config["default"]["batch_size"],
+            num_workers=1,
+        )
+    
     model = (
         Fitz17kResNet18(num_classes=3, pretrained=config["default"]["pretrained"])
         .to(device)
@@ -250,104 +206,101 @@ def main(config):
 
     metric = nn.CrossEntropyLoss()
 
-    # # Evaluating the BASE model
-    # val_metrics, _ = eval_model(
-    #     model,
-    #     dataloaders,
-    #     dataset_sizes,
-    #     device,
-    #     config["default"]["level"],
-    #     "BASE",
-    #     config,
-    #     save_preds=False,
-    # )
-    # print("model's bias metrics before pruning: {}".format(val_metrics[config['FairPrune']['target_bias_metric']]))
-
-    # best_bias_metric = val_metrics[config['FairPrune']["target_bias_metric"]]
-    best_bias_metric = 0.6394507842223532
+    
     prun_iter_cnt = 0
-    no_improvement_cnt = 0
     consecutive_no_improvement = 0
+    best_bias_metric = config["FairPrune"]["bias_metric_prev"]
+    val_metrics_df = None
+    
 
-    while no_improvement_cnt < config["FairPrune"]["max_consecutive_no_improvement"]:
+    while consecutive_no_improvement <= config["FairPrune"]["max_consecutive_no_improvement"]:
         since = time.time()
 
         print(
-            f"+++++++++++++++++++++++++++++ Pruning Iteration {prun_iter_cnt} +++++++++++++++++++++++++++++"
+            f"+++++++++++++++++++++++++++++ Pruning Iteration {prun_iter_cnt+1} +++++++++++++++++++++++++++++"
         )
-        model_pruned = fairprune(
-            model=model,
-            metric=metric,
-            device=device,
-            config=config,
-            verbose=1,
-        )
+        if prun_iter_cnt == 0:
+            pruned_model = fairprune(
+                model=model,
+                metric=metric,
+                device=device,
+                config=config,
+                verbose=1,
+            )
+        else:
+            pruned_model = fairprune(
+                model=pruned_model,
+                metric=metric,
+                device=device,
+                config=config,
+                verbose=1,
+            )
 
-        dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
-            root_image_dir=config["root_image_dir"],
-            Generated_csv_path=config["Generated_csv_path"],
-            level=config["default"]["level"],
-            binary_subgroup=config["default"]["binary_subgroup"],
-            holdout_set="random_holdout",
-            batch_size=config["default"]["batch_size"],
-            num_workers=1,
-        )
+        model_name = f"ResNet18_FairPrune_PIter{prun_iter_cnt+1}"
 
-        val_metrics, df_preds = eval_model(
-            model_pruned,
+        val_metrics, _ = eval_model(
+            pruned_model,
             dataloaders,
             dataset_sizes,
+            num_classes,
             device,
             config["default"]["level"],
-            "FairPrune",
+            model_name,
             config,
-            save_preds=False,
+            save_preds=True,
         )
 
-        if val_metrics[config["FairPrune"]["target_bias_metric"]] > best_bias_metric:
-            best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
+        if config["FairPrune"]["target_bias_metric"] in [
+            "AUC_Gap",
+            "EOpp0",
+            "EOpp1",
+            "EOdd",
+            "NAR",
+        ]:
+            if val_metrics[config["FairPrune"]["target_bias_metric"]] < best_bias_metric:
+                best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
 
-            # Save the df_preds
-
-            df_preds.to_csv(
-                os.path.join(
-                    config["output_folder_path"],
-                    f"validation_results_Resnet18_FairPrune_Iter={prun_iter_cnt}.csv",
-                ),
-                index=False,
-            )
-
-            # Save the best model
-            print("New leading model val metrics \n")
-            print(val_metrics)
-
-            best_model_path = os.path.join(
-                config["output_folder_path"],
-                f"Resnet18_checkpoint_FairPrune_Iter={prun_iter_cnt}.pth",
-            )
-            checkpoint = {
-                "leading_val_metrics": val_metrics,
-                "model_state_dict": model.state_dict(),
-            }
-            torch.save(checkpoint, best_model_path)
-            print("Checkpoint saved:", best_model_path)
-
-            # Reset the counter
-            consecutive_no_improvement = 0
-        else:
-            print(
-                "Bias Metric is: {}, No improvement.\n".format(
-                    val_metrics[config["FairPrune"]["target_bias_metric"]]
+                # Save the best model
+                print(
+                    f'Achieved new leading val metrics: {config["FairPrune"]["target_bias_metric"]}={best_bias_metric} \n'
                 )
-            )
-            df_preds.to_csv(
-                os.path.join(
-                    config["output_folder_path"],
-                    f"validation_results_Resnet18_FairPrune_Iter={prun_iter_cnt}_temp.csv",
-                ),
-                index=False,
-            )
-            consecutive_no_improvement += 1
+
+                # Reset the counter
+                consecutive_no_improvement = 0
+            else:
+                print(
+                    f"No improvements observed in Iteration {prun_iter_cnt+1}, val metrics: \n"
+                )
+                consecutive_no_improvement += 1
+        else:
+            if val_metrics[config["FairPrune"]["target_bias_metric"]] > best_bias_metric:
+                best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
+
+                # Save the best model
+                print(
+                    f'Achieved new leading val metrics: {config["FairPrune"]["target_bias_metric"]}={best_bias_metric} \n'
+                )
+
+                # Reset the counter
+                consecutive_no_improvement = 0
+            else:
+                print(
+                    f"No improvements observed in Iteration {prun_iter_cnt+1}, val metrics: \n"
+                )
+                consecutive_no_improvement += 1
+
+        print(val_metrics)
+
+        model_path = os.path.join(
+            config["output_folder_path"],
+            f"{model_name}.pth",
+        )
+        checkpoint = {
+            "config": config,
+            "leading_val_metrics": val_metrics,
+            "model_state_dict": pruned_model.state_dict(),
+        }
+        torch.save(checkpoint, model_path)
 
         prun_iter_cnt += 1
 
@@ -358,14 +311,25 @@ def main(config):
             )
         )
 
-        if (
-            consecutive_no_improvement
-            == config["FairPrune"]["max_consecutive_no_improvement"]
-        ):
-            print(
-                "max_consecutive_no_improvement limit reached, Stopping the Pruning..."
+        if prun_iter_cnt == 0:
+            val_metrics_df = pd.DataFrame([val_metrics])
+        else:
+            val_metrics_df = pd.concat(
+                [val_metrics_df, pd.DataFrame([val_metrics])], ignore_index=True
             )
-            break
+        val_metrics_df.to_csv(
+            os.path.join(config["output_folder_path"], f"Pruning_metrics.csv"),
+            index=False,
+        )
+    plot_metrics(val_metrics_df, ["acc_avg", "PQD", "DPM", "EOM"], "positive", config)
+    plot_metrics(val_metrics_df, ["EOpp0", "EOpp1", "EOdd", "NAR"], "negative", config)
+    plot_metrics(val_metrics_df, ["AUC", "AUC_Gap"], "AUC", config)
+    plot_metrics(
+        val_metrics_df,
+        ["PQD_binary", "DPM_binary", "EOM_binary", "NAR_binary"],
+        "binary",
+        config,
+    )
 
 
 if __name__ == "__main__":

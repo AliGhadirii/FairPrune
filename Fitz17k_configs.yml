@@ -1,25 +1,23 @@
 ---
 seed: 42
-output_folder_path: /content/drive/MyDrive/FairPrune/Outputs/
-#output_folder_path: /content/drive/MyDrive/UNSW/FairPrune/Outputs/
-root_image_dir: /content/drive/MyDrive/Datasets/Fitz17k/Images/
-#root_image_dir: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/Images/
-Generated_csv_path: /content/drive/MyDrive/Datasets/Fitz17k/FairPrune/fitapatrick17k_known_code.csv
-#Generated_csv_path: /content/drive/MyDrive/UNSW/Datasets/Fitz17k/FairPrune/fitapatrick17k_known_code.csv
+output_folder_path: /home/ali/Outputs/Pruning/FairPrune/
+root_image_dir: /home/ali/Datasets/Fitz17k/Images/
+Generated_csv_path: /home/ali/Datasets/Fitz17k/fitzpatrick17k_preprocessed.csv
 num_workers: 1
 default:
+  mode: eval            # train, eval
   batch_size: 64
-  n_epochs: 20
-  pretrained: True
-  level: high
-  binary_subgroup: True
+  n_epochs: 50
+  pretrained: True      # True, False
+  level: high           # level of label: low, mid, high, binary, fitzpatrick, or fitzpatrick_binary
 FairPrune:
+  bias_metric_prev: 0.628
   batch_size: 2
-  avg_num_batch: 100
-  prune_ratio: 0.05           # ratio of parameters to be pruned on each iteration
+  num_batch_per_iter: 500
+  pruning_rate: 0.05           # ratio of parameters to be pruned on each iteration
   beta: 0.2                   # ratio between 0 and 1 for weighting of privileged group
   privileged_group: 1         # privileged group sensative attribute value in dataset
   unprivileged_group: 0       # unprivileged group sensative attribute value in dataset
-  target_bias_metric: EOM     #it can be "PQD", "DPM", or "EOM"
-  max_consecutive_no_improvement: 5
+  target_bias_metric: AUC_Gap
+  max_consecutive_no_improvement: 4
 
