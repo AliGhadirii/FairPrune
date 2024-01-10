@@ -15,7 +15,7 @@ FairPrune:
   model_weights_path: /home/ali/Outputs/PAD-UFES-20/FairPrune/Baseline-Resnet18/Resnet18_BASE_low_checkpoint_BASE.pth
   bias_metric_prev: 0.369
   batch_size: 2
-  num_batch_per_iter: 500
+  num_batch_per_iter: 330
   pruning_rate: 0.35           # ratio of parameters to be pruned on each iteration
   beta: 0.33                   # ratio between 0 and 1 for weighting of privileged group
   target_bias_metric: EOM

@@ -4,6 +4,7 @@ import time
 import os
 from tqdm import tqdm
 import shutil
+from itertools import cycle
 
 import numpy as np
 import pandas as pd
@@ -20,9 +21,9 @@ from Utils.Metrics import plot_metrics
 from Evaluation import eval_model
 
 
-def get_parameter_salience(model_extend, metric_extend, batch, device):
+def get_parameter_salience(model_extend, metric_extend, batch, level, device):
     inputs = batch["image"].to(device)
-    labels = batch["high"]
+    labels = batch[level]
     labels = torch.from_numpy(np.asarray(labels)).to(device)
 
     output = model_extend(inputs.float())
@@ -87,12 +88,18 @@ def fairprune(
     lengths_tensor = torch.tensor(
         [len(dataloaders0["train"]), len(dataloaders1["train"])]
     )
-    min_length_index, min_length = torch.argmin(lengths_tensor), torch.min(
-        lengths_tensor
-    )
+    min_length_index = torch.argmin(lengths_tensor)
 
     train_iterator0 = iter(dataloaders0["train"])
     train_iterator1 = iter(dataloaders1["train"])
+
+    # handling the smaller dataloader
+    if min_length_index == 0:
+        train_iterator0 = cycle(train_iterator0)
+        print("INFO: Insufficient number of batches in dataloader0, cycling it.")
+    else:
+        train_iterator1 = cycle(train_iterator1)
+        print("INFO: Insufficient number of batches in dataloader1, cycling it.")
 
     θ = torch.cat([param.flatten() for param in model_extend.parameters()])
     sum_saliencies = torch.zeros_like(θ)
@@ -101,8 +108,12 @@ def fairprune(
         enumerate(zip(train_iterator0, train_iterator1)),
         total=config["FairPrune"]["num_batch_per_iter"],
     ):
-        h0 = get_parameter_salience(model_extend, metric_extend, batch0, device)
-        h1 = get_parameter_salience(model_extend, metric_extend, batch1, device)
+        h0 = get_parameter_salience(
+            model_extend, metric_extend, batch0, config["default"]["level"], device
+        )
+        h1 = get_parameter_salience(
+            model_extend, metric_extend, batch1, config["default"]["level"], device
+        )
 
         # saliency matrix
         saliency = 1 / 2 * θ**2 * (h0 - config["FairPrune"]["beta"] * h1)
@@ -111,13 +122,6 @@ def fairprune(
 
         del h0, h1, saliency
         torch.cuda.empty_cache()
-
-        # handling the smaller dataloader
-        if iter_cnt % min_length == 0:
-            if min_length_index == 0:
-                train_iterator0 = iter(dataloaders0["train"])
-            else:
-                train_iterator1 = iter(dataloaders1["train"])
 
         # Breaking when the number of batches to calculate the average for is reached
         iter_cnt += 1
