@@ -3,6 +3,8 @@ import yaml
 import time
 import os
 from tqdm import tqdm
+import shutil
+from itertools import cycle
 
 import numpy as np
 import pandas as pd
@@ -12,16 +14,16 @@ import torch.nn as nn
 from backpack import backpack, extend
 from backpack.extensions import DiagGGNExact
 
-from Datasets.dataloaders import get_fitz17k_dataloaders
+from Datasets.dataloaders import get_dataloaders
 from Models.Fitz17k_models import Fitz17kResNet18
 from Utils.Misc_utils import set_seeds
 from Utils.Metrics import plot_metrics
 from Evaluation import eval_model
 
 
-def get_parameter_salience(model_extend, metric_extend, batch, device):
+def get_parameter_salience(model_extend, metric_extend, batch, level, device):
     inputs = batch["image"].to(device)
-    labels = batch["high"]
+    labels = batch[level]
     labels = torch.from_numpy(np.asarray(labels)).to(device)
 
     output = model_extend(inputs.float())
@@ -56,22 +58,22 @@ def fairprune(
     model_extend = extend(model, use_converter=True)
     metric_extend = extend(metric.to(device))
 
-    dataloaders0, dataset_sizes0, num_classes0 = get_fitz17k_dataloaders(
+    dataloaders0, dataset_sizes0, num_classes0 = get_dataloaders(
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
+        dataset_name=config["dataset_name"],
         level=config["default"]["level"],
         fitz_filter=0,
-        holdout_set="random_holdout",
         batch_size=config["FairPrune"]["batch_size"],
         num_workers=1,
     )
 
-    dataloaders1, dataset_sizes1, num_classes1 = get_fitz17k_dataloaders(
+    dataloaders1, dataset_sizes1, num_classes1 = get_dataloaders(
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
+        dataset_name=config["dataset_name"],
         level=config["default"]["level"],
         fitz_filter=1,
-        holdout_set="random_holdout",
         batch_size=config["FairPrune"]["batch_size"],
         num_workers=1,
     )
@@ -86,12 +88,18 @@ def fairprune(
     lengths_tensor = torch.tensor(
         [len(dataloaders0["train"]), len(dataloaders1["train"])]
     )
-    min_length_index, min_length = torch.argmin(lengths_tensor), torch.min(
-        lengths_tensor
-    )
+    min_length_index = torch.argmin(lengths_tensor)
 
     train_iterator0 = iter(dataloaders0["train"])
     train_iterator1 = iter(dataloaders1["train"])
+
+    # handling the smaller dataloader
+    if min_length_index == 0:
+        train_iterator0 = cycle(train_iterator0)
+        print("INFO: Insufficient number of batches in dataloader0, cycling it.")
+    else:
+        train_iterator1 = cycle(train_iterator1)
+        print("INFO: Insufficient number of batches in dataloader1, cycling it.")
 
     θ = torch.cat([param.flatten() for param in model_extend.parameters()])
     sum_saliencies = torch.zeros_like(θ)
@@ -100,8 +108,12 @@ def fairprune(
         enumerate(zip(train_iterator0, train_iterator1)),
         total=config["FairPrune"]["num_batch_per_iter"],
     ):
-        h0 = get_parameter_salience(model_extend, metric_extend, batch0, device)
-        h1 = get_parameter_salience(model_extend, metric_extend, batch1, device)
+        h0 = get_parameter_salience(
+            model_extend, metric_extend, batch0, config["default"]["level"], device
+        )
+        h1 = get_parameter_salience(
+            model_extend, metric_extend, batch1, config["default"]["level"], device
+        )
 
         # saliency matrix
         saliency = 1 / 2 * θ**2 * (h0 - config["FairPrune"]["beta"] * h1)
@@ -110,13 +122,6 @@ def fairprune(
 
         del h0, h1, saliency
         torch.cuda.empty_cache()
-
-        # handling the smaller dataloader
-        if iter_cnt % min_length == 0:
-            if min_length_index == 0:
-                train_iterator0 = iter(dataloaders0["train"])
-            else:
-                train_iterator1 = iter(dataloaders1["train"])
 
         # Breaking when the number of batches to calculate the average for is reached
         iter_cnt += 1
@@ -179,31 +184,36 @@ def main(config):
 
     set_seeds(config["seed"])
 
-    dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
+    shutil.copy(
+        "Configs/configs_server.yml",
+        os.path.join(config["output_folder_path"], "configs.yml"),
+    )
+
+    dataloaders, dataset_sizes, num_classes = get_dataloaders(
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
+        dataset_name=config["dataset_name"],
         level=config["default"]["level"],
-        holdout_set="random_holdout",
         batch_size=config["default"]["batch_size"],
         num_workers=1,
     )
 
     model = (
-        Fitz17kResNet18(num_classes=3, pretrained=config["default"]["pretrained"])
+        Fitz17kResNet18(
+            num_classes=num_classes, pretrained=config["default"]["pretrained"]
+        )
         .to(device)
         .eval()
     )
 
-    best_BASE_model_path = os.path.join(
-        config["output_folder_path"], "Resnet18_checkpoint_BASE.pth"
-    )
+    checkpoint = torch.load(config["FairPrune"]["model_weights_path"])
+    model.load_state_dict(checkpoint["model_state_dict"])
+    print("Loading model weights from:", config["FairPrune"]["model_weights_path"])
 
-    if os.path.isfile(best_BASE_model_path):
-        print("Loading model from:", best_BASE_model_path)
-        checkpoint = torch.load(best_BASE_model_path)
-        model.load_state_dict(checkpoint["model_state_dict"])
-
-    metric = nn.CrossEntropyLoss()
+    if num_classes == 2:
+        metric = nn.BCEWithLogitsLoss()
+    else:
+        metric = nn.CrossEntropyLoss()
 
     prun_iter_cnt = 0
     consecutive_no_improvement = 0
@@ -331,15 +341,24 @@ def main(config):
             os.path.join(config["output_folder_path"], f"Pruning_metrics.csv"),
             index=False,
         )
-    plot_metrics(val_metrics_df, ["acc_avg", "PQD", "DPM", "EOM"], "positive", config)
-    plot_metrics(val_metrics_df, ["EOpp0", "EOpp1", "EOdd", "NAR"], "negative", config)
-    plot_metrics(val_metrics_df, ["AUC", "AUC_Gap"], "AUC", config)
-    plot_metrics(
-        val_metrics_df,
-        ["PQD_binary", "DPM_binary", "EOM_binary", "NAR_binary"],
-        "binary",
-        config,
-    )
+
+        plot_metrics(val_metrics_df, ["accuracy", "acc_gap"], "ACC", config)
+        plot_metrics(val_metrics_df, ["F1_Mac", "F1_Mac_gap"], "F1", config)
+        plot_metrics(val_metrics_df, ["AUC", "AUC_Gap"], "AUC", config)
+        plot_metrics(val_metrics_df, ["PQD", "DPM", "EOM"], "positive", config)
+        plot_metrics(
+            val_metrics_df,
+            ["EOpp0", "EOpp1", "EOdd", "NAR", "NFR_Mac"],
+            "negative",
+            config,
+        )
+
+        plot_metrics(
+            val_metrics_df,
+            ["PQD_binary", "DPM_binary", "EOM_binary", "NAR_binary"],
+            "binary",
+            config,
+        )
 
 
 if __name__ == "__main__":

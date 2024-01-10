@@ -2,6 +2,7 @@ import argparse
 import yaml
 import time
 import os
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -12,10 +13,13 @@ from torch.optim import lr_scheduler
 import copy
 from sklearn.metrics import balanced_accuracy_score
 
-from Datasets.Fitz17k_dataset import get_fitz17k_dataloaders
+from Datasets.dataloaders import get_dataloaders
 from Models.Fitz17k_models import Fitz17kResNet18
 from Utils.Misc_utils import set_seeds
 from Evaluation import eval_model
+
+import warnings
+from sklearn.exceptions import UndefinedMetricWarning
 
 
 def train_model(
@@ -27,10 +31,10 @@ def train_model(
     optimizer,
     scheduler,
     device,
+    model_name,
     config,
 ):
     since = time.time()
-    batch_size = config["default"]["batch_size"]
 
     training_results = []
     validation_results = []
@@ -38,7 +42,7 @@ def train_model(
     best_acc = 0
 
     best_model_path = os.path.join(
-        config["output_folder_path"], "Resnet18_checkpoint_BASE.pth"
+        config["output_folder_path"], f"{model_name}_checkpoint_BASE.pth"
     )
 
     if os.path.isfile(best_model_path):
@@ -57,6 +61,8 @@ def train_model(
         print("Epoch {}/{}".format(epoch, config["default"]["n_epochs"] - 1))
         print("-" * 20)
 
+        since_epoch = time.time()
+
         # Each epoch has a training and validation phase
         for phase in ["train", "val"]:
             # Set the model to the training mode
@@ -71,46 +77,55 @@ def train_model(
             running_loss = 0.0
             running_corrects = 0
             running_balanced_acc_sum = 0
-            probs_mat = np.zeros((dataset_sizes[phase], num_classes))
-            preds_vec = np.zeros((dataset_sizes[phase],))
-            labels_vec = np.zeros((dataset_sizes[phase],))
-            fitz = np.zeros(dataset_sizes[phase])
             cnt = 0
 
             print(f"Current phase: {phase}")
             # Iterate over data
-            for batch in dataloaders[phase]:
+            for idx, batch in enumerate(dataloaders[phase]):
                 # Send inputs and labels to the device
                 inputs = batch["image"].to(device)
-                labels = batch["high"]
-                attrs = batch["fitzpatrick"]
+                labels = batch[config["default"]["level"]]
 
-                labels = torch.from_numpy(np.asarray(labels)).to(device)
-                attrs = torch.from_numpy(np.asarray(attrs)).to(device)
+                if num_classes == 2:
+                    labels = (
+                        torch.from_numpy(np.asarray(labels)).unsqueeze(1).to(device)
+                    )
+                else:
+                    labels = torch.from_numpy(np.asarray(labels)).to(device)
 
                 # Zero the gradients
                 optimizer.zero_grad()
+
+                def handle_warning(
+                    message, category, filename, lineno, file=None, line=None
+                ):
+                    print("Warning:", message)
+                    print("Additional Information:")
+                    print(f"Phase: {phase}, batch idx: {idx}")
+
+                # Filter warnings to catch the specific warning types
+                warnings.filterwarnings("always", category=UndefinedMetricWarning)
+
+                # Set the custom function to handle the warning
+                warnings.showwarning = handle_warning
 
                 # Forward
                 with torch.set_grad_enabled(phase == "train"):
                     inputs = inputs.float()
                     outputs = model(inputs)
-                    _, preds = torch.max(outputs, 1)
 
-                    loss = criterion(outputs, labels)
+                    if num_classes == 2:
+                        probs = nn.functional.sigmoid(outputs)
+                        theshold = find_threshold(
+                            probs.cpu().data.numpy(), labels.cpu().data.numpy()
+                        )
+                        preds = (probs > theshold).to(torch.int32)
 
-                    probs_mat[cnt * batch_size : (cnt + 1) * batch_size, :] = (
-                        outputs.cpu().detach().numpy()
-                    )
-                    preds_vec[cnt * batch_size : (cnt + 1) * batch_size] = (
-                        preds.cpu().detach().numpy()
-                    )
-                    labels_vec[cnt * batch_size : (cnt + 1) * batch_size] = (
-                        labels.cpu().detach().numpy()
-                    )
-                    fitz[cnt * batch_size : (cnt + 1) * batch_size] = (
-                        attrs.cpu().detach().numpy()
-                    )
+                        loss = criterion(outputs, labels.to(torch.float32))
+                    else:
+                        probs, preds = torch.max(outputs, 1)
+
+                        loss = criterion(outputs, labels)
 
                     # Backward + optimize only if in the training phase
                     if phase == "train":
@@ -169,9 +184,17 @@ def train_model(
                     "best_loss": best_loss,
                     "best_acc": best_acc,
                     "best_balanced_acc": best_balanced_acc,
+                    "config": config,
                 }
                 torch.save(checkpoint, best_model_path)
                 print("Checkpoint saved:", best_model_path)
+
+        time_elapsed_epoch = time.time() - since_epoch
+        print(
+            "Epoch {} completed in {:.0f}m {:.0f}s".format(
+                epoch, time_elapsed_epoch // 60, time_elapsed_epoch % 60
+            )
+        )
 
     # Time
     time_elapsed = time.time() - since
@@ -215,12 +238,13 @@ def main(config):
 
     set_seeds(config["seed"])
 
-    dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
+    model_name = f"Resnet18_BASE_{config['default']['level']}"
+
+    dataloaders, dataset_sizes, num_classes = get_dataloaders(
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
+        dataset_name=config["dataset_name"],
         level=config["default"]["level"],
-        binary_subgroup=config["default"]["binary_subgroup"],
-        holdout_set="random_holdout",
         batch_size=config["default"]["batch_size"],
         num_workers=1,
     )
@@ -229,52 +253,84 @@ def main(config):
         num_classes=num_classes, pretrained=config["default"]["pretrained"]
     )
     model = model.to(device)
-    
+
     print(model)
 
-    criterion = nn.CrossEntropyLoss()
+    if num_classes == 2:
+        criterion = nn.BCEWithLogitsLoss()
+    else:
+        criterion = nn.CrossEntropyLoss()
+
     optimizer = optim.Adam(model.parameters(), 0.0001)
-    exp_lr_scheduler = lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.9)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.9)
 
-    model, training_results, validation_results = train_model(
-        dataloaders,
-        dataset_sizes,
-        num_classes,
-        model,
-        criterion,
-        optimizer,
-        exp_lr_scheduler,
-        device,
-        config,
-    )
+    if config["default"]["mode"] == "eval":
+        best_model_path = os.path.join(
+            config["output_folder_path"], f"{model_name}_checkpoint_BASE.pth"
+        )
+        print("EVAL MODE: Loading the weights from ", best_model_path)
 
-    num_epoch = config["default"]["n_epochs"]
-    training_results.to_csv(
-        os.path.join(
-            config["output_folder_path"],
-            f"training_results_Resnet18_{num_epoch}_random_holdout_BASE.csv",
-        ),
-        index=False,
-    )
-    validation_results.to_csv(
-        os.path.join(
-            config["output_folder_path"],
-            f"all_validation_results_Resnet18_{num_epoch}_random_holdout_BASE.csv",
-        ),
-        index=False,
-    )
+        checkpoint = torch.load(best_model_path)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        best_loss = checkpoint["best_loss"]
+        best_acc = checkpoint["best_acc"]
+        best_balanced_acc = checkpoint["best_balanced_acc"]
+        leading_epoch = checkpoint["leading_epoch"]
+
+        print(
+            "Best epoch {}: Loss: {:.4f} Acc: {:.4f} Balanced Accuracy: {:.4f} ".format(
+                leading_epoch, best_loss, best_acc, best_balanced_acc
+            )
+        )
+    else:
+        shutil.copy(
+            "Configs/configs_server.yml",
+            os.path.join(config["output_folder_path"], "configs.yml"),
+        )
+
+        model, training_results, validation_results = train_model(
+            dataloaders,
+            dataset_sizes,
+            num_classes,
+            model,
+            criterion,
+            optimizer,
+            scheduler,
+            device,
+            model_name,
+            config,
+        )
+
+        training_results.to_csv(
+            os.path.join(
+                config["output_folder_path"],
+                f"Training_log_{model_name}_random_holdout.csv",
+            ),
+            index=False,
+        )
+        validation_results.to_csv(
+            os.path.join(
+                config["output_folder_path"],
+                f"Validation_log_{model_name}_random_holdout.csv",
+            ),
+            index=False,
+        )
 
     val_metrics, _ = eval_model(
         model,
         dataloaders,
         dataset_sizes,
+        num_classes,
         device,
         config["default"]["level"],
-        "BASE",
+        model_name,
         config,
         save_preds=True,
     )
 
+    print("validation metrics:")
     print(val_metrics)
 
 

@@ -1,6 +1,12 @@
 import os
 import numpy as np
-from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_auc_score
+from sklearn.metrics import (
+    confusion_matrix,
+    precision_recall_curve,
+    roc_auc_score,
+    f1_score,
+    accuracy_score,
+)
 
 import matplotlib.pyplot as plt
 
@@ -17,11 +23,11 @@ def cal_metrics(df):
     type_indices = sorted(list(df["fitzpatrick"].unique()))
     type_indices_binary = sorted(list(df["fitzpatrick_binary"].unique()))
 
-    labels_array = np.zeros((6, len(df["label"].unique())))
-    correct_array = np.zeros((6, len(df["label"].unique())))
-    predictions_array = np.zeros((6, len(df["label"].unique())))
-    prob_array = [[] for i in range(len(df["fitzpatrick"].unique()))]
-    label_array_per_fitz = [[] for i in range(len(df["fitzpatrick"].unique()))]
+    labels_array = np.zeros((len(type_indices), len(df["label"].unique())))
+    correct_array = np.zeros((len(type_indices), len(df["label"].unique())))
+    predictions_array = np.zeros((len(type_indices), len(df["label"].unique())))
+    prob_array = [[] for i in range(len(type_indices))]
+    label_array_per_fitz = [[] for i in range(len(type_indices))]
 
     labels_array_binary = np.zeros((2, len(df["label"].unique())))
     correct_array_binary = np.zeros((2, len(df["label"].unique())))
@@ -68,12 +74,49 @@ def cal_metrics(df):
     labels_array = labels_array[type_indices]
     predictions_array = predictions_array[type_indices]
 
-    # avg acc, acc per type
-    correct_array_sumc, labels_array_sumc = np.sum(correct_array, axis=1), np.sum(
-        labels_array, axis=1
-    )  # sum skin conditions
-    acc_array = correct_array_sumc / labels_array_sumc
-    avg_acc = np.sum(correct_array) / np.sum(labels_array)
+    # Accuracy, accuracy per type
+    Accuracy = accuracy_score(df["label"], df["prediction"]) * 100
+
+    acc_array = []
+    for i in range(len(type_indices)):
+        acc_array.append(
+            accuracy_score(
+                df[df["fitzpatrick"] == i]["label"],
+                df[df["fitzpatrick"] == i]["prediction"],
+            )
+            * 100
+        )
+    acc_array = np.array(acc_array)
+
+    # f1_score, f1-score per type (Weighted average)
+    F1_W = f1_score(df["label"], df["prediction"], average="weighted") * 100
+
+    F1_W_array = []
+    for i in range(len(type_indices)):
+        F1_W_array.append(
+            f1_score(
+                df[df["fitzpatrick"] == i]["label"],
+                df[df["fitzpatrick"] == i]["prediction"],
+                average="weighted",
+            )
+            * 100
+        )
+    F1_W_array = np.array(F1_W_array)
+
+    # f1_score, f1-score per type (Macro average)
+    F1_Mac = f1_score(df["label"], df["prediction"], average="macro") * 100
+
+    F1_Mac_array = []
+    for i in range(len(type_indices)):
+        F1_Mac_array.append(
+            f1_score(
+                df[df["fitzpatrick"] == i]["label"],
+                df[df["fitzpatrick"] == i]["prediction"],
+                average="macro",
+            )
+            * 100
+        )
+    F1_Mac_array = np.array(F1_Mac_array)
 
     # PQD
     PQD = acc_array.min() / acc_array.max()
@@ -84,10 +127,16 @@ def cal_metrics(df):
 
     # EOM
     eo_array = correct_array / labels_array
-    EOM = np.mean(np.min(eo_array, axis=0) / np.max(eo_array, axis=0))
+    EOM = np.mean(np.nanmin(eo_array, axis=0) / np.nanmax(eo_array, axis=0))
 
     # NAR
     NAR = (acc_array.max() - acc_array.min()) / acc_array.mean()
+
+    # NFR (Weighted)
+    NFR_W = (F1_W_array.max() - F1_W_array.min()) / F1_W_array.mean()
+
+    # NAR (Macro)
+    NFR_Mac = (F1_Mac_array.max() - F1_Mac_array.min()) / F1_Mac_array.mean()
 
     # AUC
     if is_binaryCLF:
@@ -95,13 +144,16 @@ def cal_metrics(df):
         AUC = roc_auc_score(df["label"], df["prediction_probability"]) * 100
         AUC_per_type = []
         for i in range(len(label_array_per_fitz)):
-            AUC_per_type.append(
-                roc_auc_score(label_array_per_fitz[i], prob_array[i]) * 100
-            )
+            try:
+                AUC_per_type.append(
+                    roc_auc_score(label_array_per_fitz[i], prob_array[i]) * 100
+                )
+            except:
+                AUC_per_type.append(np.nan)
         AUC_Gap = max(AUC_per_type) - min(AUC_per_type)
     else:
         AUC = -1
-        AUC_per_type = -1
+        AUC_per_type = [-1] * len(type_indices)
         AUC_Gap = -1
 
     ##############################          Metrics with binary Sensative attribute         ##############################
@@ -117,7 +169,7 @@ def cal_metrics(df):
         labels_array_binary, axis=1
     )  # sum skin conditions
     acc_array_binary = correct_array_sumc_binary / labels_array_sumc_binary
-    avg_acc_binary = np.sum(correct_array_binary) / np.sum(labels_array_binary)
+    avg_acc_binary = (np.sum(correct_array_binary) / np.sum(labels_array_binary)) * 100
 
     # PQD
     PQD_binary = acc_array_binary.min() / acc_array_binary.max()
@@ -131,7 +183,7 @@ def cal_metrics(df):
     # EOM
     eo_array_binary = correct_array_binary / labels_array_binary
     EOM_binary = np.mean(
-        np.min(eo_array_binary, axis=0) / np.max(eo_array_binary, axis=0)
+        np.nanmin(eo_array_binary, axis=0) / np.nanmax(eo_array_binary, axis=0)
     )
 
     # getting class-wise TPR, FPR, TNR for fitzpatrick 0
@@ -167,6 +219,18 @@ def cal_metrics(df):
 
     conf_matrix_fitz1 = confusion_matrix(labels_ft1, predictions_ft1)
 
+    # Check if there is any class that is not in both subgroups to handle it
+    try:
+        class_idx = (
+            set(df[df["fitzpatrick_binary"] == 0]["label"].unique())
+            - set(df[df["fitzpatrick_binary"] == 1]["label"].unique())
+        ).pop()
+        conf_matrix_fitz1 = np.insert(conf_matrix_fitz1, class_idx, 0, axis=1)
+        conf_matrix_fitz1 = np.insert(conf_matrix_fitz1, class_idx, 0, axis=0)
+        print(f"INFO: class {class_idx} is not in both binary subgroups")
+    except:
+        class_idx = None
+
     # Initialize lists to store TPR, TNR, FPR for each class
     class_tpr_fitz1 = []
     class_tnr_fitz1 = []
@@ -193,25 +257,36 @@ def cal_metrics(df):
         fpr = 1 - tnr
         class_fpr_fitz1.append(fpr)
 
+    if class_idx is not None:
+        class_tpr_fitz1[class_idx] = np.nan
+        class_tnr_fitz1[class_idx] = np.nan
+        class_fpr_fitz1[class_idx] = np.nan
+
     # EOpp0
     EOpp0 = 0
     for c in range(len(class_tnr_fitz0)):
-        EOpp0 += abs(class_tnr_fitz1[c] - class_tnr_fitz0[c])
+        val = abs(class_tnr_fitz1[c] - class_tnr_fitz0[c])
+        if not np.isnan(val):
+            EOpp0 += val
 
     # EOpp1
     EOpp1 = 0
     for c in range(len(class_tpr_fitz0)):
-        EOpp1 += abs(class_tpr_fitz1[c] - class_tpr_fitz0[c])
+        val = abs(class_tpr_fitz1[c] - class_tpr_fitz0[c])
+        if not np.isnan(val):
+            EOpp1 += val
 
     # EOdd
     EOdd = 0
     for c in range(len(class_tpr_fitz0)):
-        EOdd += abs(
+        val = abs(
             class_tpr_fitz1[c]
             - class_tpr_fitz0[c]
             + class_fpr_fitz1[c]
             - class_fpr_fitz0[c]
         )
+        if not np.isnan(val):
+            EOdd += val
 
     # NAR
     NAR_binary = (
@@ -219,8 +294,15 @@ def cal_metrics(df):
     ) / acc_array_binary.mean()
 
     return {
-        "acc_avg": avg_acc,
+        "accuracy": Accuracy,
         "acc_per_type": acc_array,
+        "acc_gap": acc_array.max() - acc_array.min(),
+        "F1_W": F1_W,
+        "F1_per_type_W": F1_W_array,
+        "F1_W_gap": max(F1_W_array) - min(F1_W_array),
+        "F1_Mac": F1_Mac,
+        "F1_per_type_Mac": F1_Mac_array,
+        "F1_Mac_gap": max(F1_Mac_array) - min(F1_Mac_array),
         "PQD": PQD,
         "DPM": DPM,
         "EOM": EOM,
@@ -228,9 +310,12 @@ def cal_metrics(df):
         "EOpp1": EOpp1,
         "EOdd": EOdd,
         "NAR": NAR,
+        "NFR_W": NFR_W,
+        "NFR_Mac": NFR_Mac,
         "AUC": AUC,
         "AUC_per_type": AUC_per_type,
         "AUC_Gap": AUC_Gap,
+        "AUC_min": min(AUC_per_type),
         "acc_avg_binary": avg_acc_binary,
         "acc_per_type_binary": acc_array_binary,
         "PQD_binary": PQD_binary,
@@ -297,3 +382,4 @@ def plot_metrics(df, selected_metrics, postfix, config):
             config["output_folder_path"], f"DeiT_S_LRP_pruning_metrics_{postfix}.png"
         )
     )
+    # plt.close()
