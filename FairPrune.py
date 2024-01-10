@@ -3,6 +3,7 @@ import yaml
 import time
 import os
 from tqdm import tqdm
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,7 @@ import torch.nn as nn
 from backpack import backpack, extend
 from backpack.extensions import DiagGGNExact
 
-from Datasets.dataloaders import get_fitz17k_dataloaders
+from Datasets.dataloaders import get_dataloaders
 from Models.Fitz17k_models import Fitz17kResNet18
 from Utils.Misc_utils import set_seeds
 from Utils.Metrics import plot_metrics
@@ -56,22 +57,22 @@ def fairprune(
     model_extend = extend(model, use_converter=True)
     metric_extend = extend(metric.to(device))
 
-    dataloaders0, dataset_sizes0, num_classes0 = get_fitz17k_dataloaders(
+    dataloaders0, dataset_sizes0, num_classes0 = get_dataloaders(
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
+        dataset_name=config["dataset_name"],
         level=config["default"]["level"],
         fitz_filter=0,
-        holdout_set="random_holdout",
         batch_size=config["FairPrune"]["batch_size"],
         num_workers=1,
     )
 
-    dataloaders1, dataset_sizes1, num_classes1 = get_fitz17k_dataloaders(
+    dataloaders1, dataset_sizes1, num_classes1 = get_dataloaders(
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
+        dataset_name=config["dataset_name"],
         level=config["default"]["level"],
         fitz_filter=1,
-        holdout_set="random_holdout",
         batch_size=config["FairPrune"]["batch_size"],
         num_workers=1,
     )
@@ -179,31 +180,36 @@ def main(config):
 
     set_seeds(config["seed"])
 
-    dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
+    shutil.copy(
+        "Configs/configs_server.yml",
+        os.path.join(config["output_folder_path"], "configs.yml"),
+    )
+
+    dataloaders, dataset_sizes, num_classes = get_dataloaders(
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
+        dataset_name=config["dataset_name"],
         level=config["default"]["level"],
-        holdout_set="random_holdout",
         batch_size=config["default"]["batch_size"],
         num_workers=1,
     )
 
     model = (
-        Fitz17kResNet18(num_classes=3, pretrained=config["default"]["pretrained"])
+        Fitz17kResNet18(
+            num_classes=num_classes, pretrained=config["default"]["pretrained"]
+        )
         .to(device)
         .eval()
     )
 
-    best_BASE_model_path = os.path.join(
-        config["output_folder_path"], "Resnet18_checkpoint_BASE.pth"
-    )
+    checkpoint = torch.load(config["FairPrune"]["model_weights_path"])
+    model.load_state_dict(checkpoint["model_state_dict"])
+    print("Loading model weights from:", config["FairPrune"]["model_weights_path"])
 
-    if os.path.isfile(best_BASE_model_path):
-        print("Loading model from:", best_BASE_model_path)
-        checkpoint = torch.load(best_BASE_model_path)
-        model.load_state_dict(checkpoint["model_state_dict"])
-
-    metric = nn.CrossEntropyLoss()
+    if num_classes == 2:
+        metric = nn.BCEWithLogitsLoss()
+    else:
+        metric = nn.CrossEntropyLoss()
 
     prun_iter_cnt = 0
     consecutive_no_improvement = 0
@@ -331,15 +337,24 @@ def main(config):
             os.path.join(config["output_folder_path"], f"Pruning_metrics.csv"),
             index=False,
         )
-    plot_metrics(val_metrics_df, ["acc_avg", "PQD", "DPM", "EOM"], "positive", config)
-    plot_metrics(val_metrics_df, ["EOpp0", "EOpp1", "EOdd", "NAR"], "negative", config)
-    plot_metrics(val_metrics_df, ["AUC", "AUC_Gap"], "AUC", config)
-    plot_metrics(
-        val_metrics_df,
-        ["PQD_binary", "DPM_binary", "EOM_binary", "NAR_binary"],
-        "binary",
-        config,
-    )
+
+        plot_metrics(val_metrics_df, ["accuracy", "acc_gap"], "ACC", config)
+        plot_metrics(val_metrics_df, ["F1_Mac", "F1_Mac_gap"], "F1", config)
+        plot_metrics(val_metrics_df, ["AUC", "AUC_Gap"], "AUC", config)
+        plot_metrics(val_metrics_df, ["PQD", "DPM", "EOM"], "positive", config)
+        plot_metrics(
+            val_metrics_df,
+            ["EOpp0", "EOpp1", "EOdd", "NAR", "NFR_Mac"],
+            "negative",
+            config,
+        )
+
+        plot_metrics(
+            val_metrics_df,
+            ["PQD_binary", "DPM_binary", "EOM_binary", "NAR_binary"],
+            "binary",
+            config,
+        )
 
 
 if __name__ == "__main__":

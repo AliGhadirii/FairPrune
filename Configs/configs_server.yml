@@ -1,0 +1,23 @@
+---
+seed: 42
+output_folder_path: /home/ali/Outputs/PAD-UFES-20/FairPrune/B=33_PR=35/
+root_image_dir: /home/ali/Datasets/PAD-UFES-20/images/
+Generated_csv_path: /home/ali/Datasets/PAD-UFES-20/PAD-UFES-20.csv
+dataset_name: PAD    #["Fitz17k", "HIBA", "PAD"]
+num_workers: 1
+default:
+  mode: train            # train, eval
+  batch_size: 64
+  n_epochs: 50
+  pretrained: True      # True, False
+  level: low           # level of label: low, mid, high, binary, fitzpatrick, or fitzpatrick_binary
+FairPrune:
+  model_weights_path: /home/ali/Outputs/PAD-UFES-20/FairPrune/Baseline-Resnet18/Resnet18_BASE_low_checkpoint_BASE.pth
+  bias_metric_prev: 0.369
+  batch_size: 2
+  num_batch_per_iter: 500
+  pruning_rate: 0.35           # ratio of parameters to be pruned on each iteration
+  beta: 0.33                   # ratio between 0 and 1 for weighting of privileged group
+  target_bias_metric: EOM
+  max_consecutive_no_improvement: 5
+
