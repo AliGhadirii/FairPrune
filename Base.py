@@ -243,9 +243,8 @@ def main(config):
     dataloaders, dataset_sizes, num_classes = get_dataloaders(
         root_image_dir=config["root_image_dir"],
         Generated_csv_path=config["Generated_csv_path"],
+        dataset_name=config["dataset_name"],
         level=config["default"]["level"],
-        binary_subgroup=config["default"]["binary_subgroup"],
-        holdout_set="random_holdout",
         batch_size=config["default"]["batch_size"],
         num_workers=1,
     )
