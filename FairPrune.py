@@ -56,25 +56,24 @@ def fairprune(
     model_extend = extend(model, use_converter=True)
     metric_extend = extend(metric.to(device))
 
-    
     dataloaders0, dataset_sizes0, num_classes0 = get_fitz17k_dataloaders(
-    root_image_dir=config["root_image_dir"],
-    Generated_csv_path=config["Generated_csv_path"],
-    level=config["default"]["level"],
-    fitz_filter=0,
-    holdout_set="random_holdout",
-    batch_size=config["FairPrune"]["batch_size"],
-    num_workers=1,
+        root_image_dir=config["root_image_dir"],
+        Generated_csv_path=config["Generated_csv_path"],
+        level=config["default"]["level"],
+        fitz_filter=0,
+        holdout_set="random_holdout",
+        batch_size=config["FairPrune"]["batch_size"],
+        num_workers=1,
     )
 
     dataloaders1, dataset_sizes1, num_classes1 = get_fitz17k_dataloaders(
-    root_image_dir=config["root_image_dir"],
-    Generated_csv_path=config["Generated_csv_path"],
-    level=config["default"]["level"],
-    fitz_filter=1,
-    holdout_set="random_holdout",
-    batch_size=config["FairPrune"]["batch_size"],
-    num_workers=1,
+        root_image_dir=config["root_image_dir"],
+        Generated_csv_path=config["Generated_csv_path"],
+        level=config["default"]["level"],
+        fitz_filter=1,
+        holdout_set="random_holdout",
+        batch_size=config["FairPrune"]["batch_size"],
+        num_workers=1,
     )
 
     # handling the compatibility of the given number of iterations with the dataloaders
@@ -128,7 +127,7 @@ def fairprune(
     average_saliency = sum_saliencies / config["FairPrune"]["num_batch_per_iter"]
 
     k = int(
-        config["FairPrune"]["prune_ratio"] * len(θ)
+        config["FairPrune"]["pruning_rate"] * len(θ)
     )  # number of parameters to be pruned
 
     topk_indices = torch.topk(
@@ -181,14 +180,14 @@ def main(config):
     set_seeds(config["seed"])
 
     dataloaders, dataset_sizes, num_classes = get_fitz17k_dataloaders(
-            root_image_dir=config["root_image_dir"],
-            Generated_csv_path=config["Generated_csv_path"],
-            level=config["default"]["level"],
-            holdout_set="random_holdout",
-            batch_size=config["default"]["batch_size"],
-            num_workers=1,
-        )
-    
+        root_image_dir=config["root_image_dir"],
+        Generated_csv_path=config["Generated_csv_path"],
+        level=config["default"]["level"],
+        holdout_set="random_holdout",
+        batch_size=config["default"]["batch_size"],
+        num_workers=1,
+    )
+
     model = (
         Fitz17kResNet18(num_classes=3, pretrained=config["default"]["pretrained"])
         .to(device)
@@ -206,14 +205,15 @@ def main(config):
 
     metric = nn.CrossEntropyLoss()
 
-    
     prun_iter_cnt = 0
     consecutive_no_improvement = 0
     best_bias_metric = config["FairPrune"]["bias_metric_prev"]
     val_metrics_df = None
-    
 
-    while consecutive_no_improvement <= config["FairPrune"]["max_consecutive_no_improvement"]:
+    while (
+        consecutive_no_improvement
+        <= config["FairPrune"]["max_consecutive_no_improvement"]
+    ):
         since = time.time()
 
         print(
@@ -257,8 +257,13 @@ def main(config):
             "EOdd",
             "NAR",
         ]:
-            if val_metrics[config["FairPrune"]["target_bias_metric"]] < best_bias_metric:
-                best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
+            if (
+                val_metrics[config["FairPrune"]["target_bias_metric"]]
+                < best_bias_metric
+            ):
+                best_bias_metric = val_metrics[
+                    config["FairPrune"]["target_bias_metric"]
+                ]
 
                 # Save the best model
                 print(
@@ -273,8 +278,13 @@ def main(config):
                 )
                 consecutive_no_improvement += 1
         else:
-            if val_metrics[config["FairPrune"]["target_bias_metric"]] > best_bias_metric:
-                best_bias_metric = val_metrics[config["FairPrune"]["target_bias_metric"]]
+            if (
+                val_metrics[config["FairPrune"]["target_bias_metric"]]
+                > best_bias_metric
+            ):
+                best_bias_metric = val_metrics[
+                    config["FairPrune"]["target_bias_metric"]
+                ]
 
                 # Save the best model
                 print(
