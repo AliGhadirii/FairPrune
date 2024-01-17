@@ -96,10 +96,14 @@ def fairprune(
     # handling the smaller dataloader
     if min_length_index == 0:
         train_iterator0 = cycle(train_iterator0)
-        print("INFO: Insufficient number of batches in dataloader0, cycling it.")
+        print(
+            f"INFO: Insufficient number of batches in dataloader0 [{lengths_tensor.min()}], cycling it."
+        )
     else:
         train_iterator1 = cycle(train_iterator1)
-        print("INFO: Insufficient number of batches in dataloader1, cycling it.")
+        print(
+            f"INFO: Insufficient number of batches in dataloader1 [{lengths_tensor.min()}], cycling it."
+        )
 
     θ = torch.cat([param.flatten() for param in model_extend.parameters()])
     sum_saliencies = torch.zeros_like(θ)
@@ -248,7 +252,7 @@ def main(config):
 
         model_name = f"ResNet18_FairPrune_PIter{prun_iter_cnt+1}"
 
-        val_metrics, _ = eval_model(
+        val_metrics, df_preds = eval_model(
             pruned_model,
             dataloaders,
             dataset_sizes,
@@ -342,21 +346,12 @@ def main(config):
             index=False,
         )
 
-        plot_metrics(val_metrics_df, ["accuracy", "acc_gap"], "ACC", config)
-        plot_metrics(val_metrics_df, ["F1_Mac", "F1_Mac_gap"], "F1", config)
-        plot_metrics(val_metrics_df, ["AUC", "AUC_Gap"], "AUC", config)
-        plot_metrics(val_metrics_df, ["PQD", "DPM", "EOM"], "positive", config)
+        plot_metrics(val_metrics_df, ["F1_Mac", "Worst_F1_Mac"], "F1", config)
+        plot_metrics(val_metrics_df, ["DPM", "EOM"], "positive", config)
         plot_metrics(
             val_metrics_df,
-            ["EOpp0", "EOpp1", "EOdd", "NAR", "NFR_Mac"],
+            ["EOpp0", "EOpp1", "EOdd", "NFR_Mac"],
             "negative",
-            config,
-        )
-
-        plot_metrics(
-            val_metrics_df,
-            ["PQD_binary", "DPM_binary", "EOM_binary", "NAR_binary"],
-            "binary",
             config,
         )
 
